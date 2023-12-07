@@ -311,13 +311,18 @@ class GUI(threading.Thread):
             b_uci_move = best_move[1].move.uci() if best_move[1] is not None else "..."
 
             w_eval = best_move[0].info["score"].white().score(mate_score=1000000) if best_move[0] is not None else 0
-            b_eval = best_move[1].info["score"].white().score(mate_score=1000000) if best_move[1] is not None else 0
+            if w_eval >= 999950:
+                w_eval = f"M{1000000 - w_eval}"
+            b_eval = (best_move[1].info["score"].white().score(mate_score=1000000) if best_move[1] is not None else 0) * -1
+            if b_eval >= 999950:
+                b_eval = f"M{1000000 - b_eval}"
+
             if w_uci_move == "0000" or b_uci_move == "0000":
                 self.status.configure(text="Resign")
             else:
                 self.status.configure(text=f"Best moves:\n"
                                            f"W: {w_uci_move}, {w_eval}\n"
-                                           f"B: {b_uci_move}, {-b_eval}")
+                                           f"B: {b_uci_move}, {b_eval}")
 
         if cropped is not None:
             cropped = Image.fromarray(cropped)
@@ -466,7 +471,12 @@ def stream():
             gui.updatePreview(img=src, cropped=frame)
 
         # Look for chessboard in image, get corners and split chessboard into tiles
-        tiles, corners = chessboard_finder.findGrayscaleTilesInImage(frame)
+        try:
+            tiles, corners = chessboard_finder.findGrayscaleTilesInImage(frame)
+        except ValueError:
+            print("Couldn't parse chessboard")
+            board_detected = False
+            continue
 
         # Exit on failure to find chessboard in image
         if tiles is None or len(tiles) == 0:
