@@ -86,6 +86,11 @@ def load_graph(frozen_graph_filepath):
     return graph
 
 
+def bind(num, min_val, max_val):
+    """Bind num between min and max"""
+    return max(min(num, max_val), min_val)
+
+
 class ChessboardPredictor(object):
     """ChessboardPredictor using saved model"""
 
@@ -179,6 +184,7 @@ class GUI(threading.Thread):
 
     def __init__(self):
         super().__init__()
+        self.eval_slider = None
         self.status = None
         self.y_label = None
         self.size_label = None
@@ -190,7 +196,6 @@ class GUI(threading.Thread):
         self.crop_size_slider = None
         self.crop_y = None
         self.crop_x = None
-        self.fen = None
         self.root = None
         self.preview_full = None
 
@@ -226,8 +231,6 @@ class GUI(threading.Thread):
                                         text="",
                                         )
         self.preview_cropped.grid(row=0, column=3)
-        self.fen = CTkLabel(self.root)
-        self.fen.grid(row=0, column=4)
 
         self.status = CTkLabel(self.root, text="...")
         self.status.grid(row=1, column=3)
@@ -257,6 +260,13 @@ class GUI(threading.Thread):
         self.size_label.grid(row=2, column=2)
         self.x_label = CTkLabel(self.root, text="X%")
         self.x_label.grid(row=3, column=2)
+
+        # eval (pos is better for white, neg is better for black)
+        self.eval_slider = CTkSlider(self.root, from_=-1000, to=1000, fg_color="black", progress_color="white",
+                                     orientation=VERTICAL)
+        self.eval_slider.set(0)
+        self.eval_slider.configure(state="disabled")
+        self.eval_slider.grid(row=0, column=4)
 
         # set the default window size
         self.root.geometry("600x300")
@@ -300,29 +310,43 @@ class GUI(threading.Thread):
             img: np.ndarray,
             cropped: np.ndarray = None,
             certainty: float = None,
-            fen: str = None,
             best_move: tuple[chess.engine.PlayResult] = None,
+            fps: float = None,
     ):
         if not self.isActive():
             return
 
         if best_move is not None:
-            w_uci_move = best_move[0].move.uci() if best_move[0] is not None else "..."
-            b_uci_move = best_move[1].move.uci() if best_move[1] is not None else "..."
+            w_uci_move = best_move[0].move.uci() if best_move[0] is not None and best_move[0] is not None else "..."
+            b_uci_move = best_move[1].move.uci() if best_move[1] is not None and best_move[
+                1].move is not None else "..."
 
-            w_eval = best_move[0].info["score"].white().score(mate_score=1000000) if best_move[0] is not None else 0
+            w_eval = best_move[0].info["score"].white().score(mate_score=1000000) \
+                if best_move[0] is not None else 0
+            b_eval = (best_move[1].info["score"].white().score(mate_score=1000000)
+                      if best_move[1] is not None else 0) * -1
+
+            a_eval = bind((w_eval - b_eval) / 2, min_val=-1000, max_val=1000)
+
+            self.eval_slider.set(a_eval)
+
+            # if there is a forced mate in n, then the eval is M1000000 - n
             if w_eval >= 999950:
                 w_eval = f"M{1000000 - w_eval}"
-            b_eval = (best_move[1].info["score"].white().score(mate_score=1000000) if best_move[1] is not None else 0) * -1
             if b_eval >= 999950:
                 b_eval = f"M{1000000 - b_eval}"
 
-            if w_uci_move == "0000" or b_uci_move == "0000":
-                self.status.configure(text="Resign")
+            if w_uci_move == 0 or b_uci_move == 0:
+                self.status.configure(
+                    text="Resign (" + (
+                        f'B: {b_uci_move}' if w_uci_move == 0 else f'W: {w_uci_move}'
+                    ))
             else:
-                self.status.configure(text=f"Best moves:\n"
-                                           f"W: {w_uci_move}, {w_eval}\n"
-                                           f"B: {b_uci_move}, {b_eval}")
+                self.status.configure(
+                    text=f"{f'FPS: {int(fps)}, ' if fps is not None else ''}"
+                         "Best moves:\n"
+                         f"W: {w_uci_move}, {w_eval}\n"
+                         f"B: {b_uci_move}, {b_eval}")
 
         if cropped is not None:
             cropped = Image.fromarray(cropped)
@@ -353,20 +377,6 @@ class GUI(threading.Thread):
 
         # keep reference to prevent garbage collection
         self.preview_full.image = img
-
-        # update fen
-        if fen is not None:
-            text = ""
-            for row in fen.split(' ')[0].split("/"):
-                for char in row:
-                    if char.isdigit():
-                        for i in range(int(char)):
-                            text += "_ "
-                    else:
-                        text += char + " "
-                text += "\n"
-
-            self.fen.configure(text=text)
 
         # update window title
         if certainty is not None:
@@ -452,8 +462,8 @@ def stream():
 
     w_board = chess.Board()
     b_board = chess.Board()
-    best_move_w = None
-    best_move_b = None
+    __best_move_w = {}
+    __best_move_b = {}
     board_detected = False
 
     while gui.isActive():
@@ -483,13 +493,14 @@ def stream():
             print("Couldn't find chessboard in image")
             board_detected = False
             continue
-        else:
-            board_detected = True
-            tl = (corners[0], corners[1])
-            br = (corners[2], corners[3])
-            cropped = frame[tl[1]:br[1], tl[0]:br[0]]
+
+        board_detected = True
+        tl = (corners[0], corners[1])
+        br = (corners[2], corners[3])
+        cropped = frame[tl[1]:br[1], tl[0]:br[0]]
 
         fen, tile_certainties = predictor.getPrediction(tiles)
+        print(f"Fen made in {time.perf_counter() - t_start} seconds")
         short_fen = shortenFEN(fen)
 
         # Use the worst case certainty as our final uncertainty score
@@ -502,6 +513,11 @@ def stream():
             w_board = chess.Board(w_fen)
             b_board = chess.Board(b_fen)
 
+            __best_move_b = set()
+            __best_move_w = set()
+
+        best_move_w = None
+        best_move_b = None
         if any((w_board.is_game_over(), w_board.is_checkmate(), w_board.is_stalemate())):
             print("Game over")
         else:
@@ -547,19 +563,30 @@ def stream():
                             fills[attack] = 'yellow'
 
             try:
-                best_move_w = engine.play(w_board, chess.engine.Limit(time=0.2),
-                                          ponder=True, info=chess.engine.INFO_SCORE) if w_status == chess.STATUS_VALID else None
-                best_move_b = engine.play(b_board, chess.engine.Limit(time=0.2),
-                                          ponder=True, info=chess.engine.INFO_SCORE) if b_status == chess.STATUS_VALID else None
+                best_move_w = engine.play(w_board, chess.engine.Limit(time=0.1),
+                                          ponder=True,
+                                          info=chess.engine.INFO_SCORE) if w_status == chess.STATUS_VALID else None
+                best_move_b = engine.play(b_board, chess.engine.Limit(time=0.1),
+                                          ponder=True,
+                                          info=chess.engine.INFO_SCORE) if b_status == chess.STATUS_VALID else None
+
+                if best_move_w is not None:
+                    __best_move_w.add(best_move_w)
+                if best_move_b is not None:
+                    __best_move_b.add(best_move_b)
             except chess.engine.EngineTerminatedError:
-                print(f"Stockfish died, fen: {short_fen}")
+                print(f"Stockfish died, fen: {short_fen} board status: {w_status} {b_status}")
                 break
 
             ars = []
-            if best_move_w is not None:
-                ars.append(chess.svg.Arrow(best_move_w.move.from_square, best_move_w.move.to_square, color='green'))
-            if best_move_b is not None:
-                ars.append(chess.svg.Arrow(best_move_b.move.from_square, best_move_b.move.to_square, color='red'))
+            if __best_move_w:
+                for move in __best_move_w:
+                    if move.move is not None:
+                        ars.append(chess.svg.Arrow(move.move.from_square, move.move.to_square, color='green'))
+            if __best_move_b:
+                for move in __best_move_b:
+                    if move.move is not None:
+                        ars.append(chess.svg.Arrow(move.move.from_square, move.move.to_square, color='red'))
 
             svg = chess.svg.board(
                 w_board,
@@ -574,7 +601,12 @@ def stream():
             svg = np.array(Image.open(png))
             cropped = svg
 
-        gui.updatePreview(src, cropped, certainty * 100, short_fen, (best_move_w, best_move_b))
+        gui.updatePreview(
+            img=src, cropped=cropped,
+            certainty=certainty * 100,
+            best_move=(best_move_w, best_move_b),
+            fps=1 / (time.perf_counter() - t_start),
+        )
 
         t_end = time.perf_counter()
 

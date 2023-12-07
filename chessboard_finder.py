@@ -180,7 +180,7 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
         dy = np.diff(best_seq_y)
         y_std = np.std(dy)
 
-        print(f"Standard deviations: {x_std}, {y_std}")
+        # print(f"Standard deviations: {x_std}, {y_std}")
         # if the step sizes are consistent, enough, then we can use them
         if x_std < 1 and y_std < 1:
             return corners
