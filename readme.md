@@ -65,61 +65,36 @@ Predicted FEN: bn4kN/p5bp/1p3npB/3p4/8/5Q2/PPP2PPP/R3R1K1
 Final Certainty: 100.0%
 ```
 
-Which would be ![predicted](http://www.fen-to-image.com/image/60/bn4kN/p5bp/1p3npB/3p4/8/5Q2/PPP2PPP/R3R1K1.png)
+Which would be:
 
+![predicted](http://www.fen-to-image.com/image/60/bn4kN/p5bp/1p3npB/3p4/8/5Q2/PPP2PPP/R3R1K1.png)
 
-## Reddit Bot
+## Live Streaming
 
-[/u/ChessFenBot](https://www.reddit.com/user/ChessFenBot) will automatically reply to [reddit /r/chess](https://www.reddit.com/r/) new topic image posts that contain detectable online chessboard screenshots. A screenshot either ends in `.png`, `.jpg`, `.gif`, or is an `imgur` link. 
+The live streaming script `live.py` will spawn a GUI after you select the window for it to watch.
+Only one window is used as apposed to the entire screen to reduce the amount of processing required.
 
-It replies with a [lichess](http://www.lichess.org) analysis link for that layout and a predicted [FEN](https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation).
+![Gui](GUI_example.png)
 
-```py
-predictor = ChessboardPredictor()
-fen, certainty = predictor.makePrediction('http://imgur.com/u4zF5Hj.png')
-print "Predicted FEN: %s" % fen
-print "Certainty: %.1f%%" % (certainty*100)
-```
+### Controls
 
-```
-Certainty range [0.999545 - 1], Avg: 0.999977, Overall: 0.998546
-Predicted FEN: 8/5p2/5k1P/2p4P/1p1p4/8/3K4/8
-Certainty: 99.9%
-Done
-[Finished in 1.8s]
-```
+The `Y%` slider controls the percent shift up or down, being 100% is the top and -100% is the bottom.
+The `X%` slider controls the percent shift left or right, being 100% is the right and -100% is the left.
 
-ChessFenBot automatically replied to [this reddit post](https://www.reddit.com/r/chess/comments/45osos/very_difficult_find_the_best_move_for_white/d004cg6?context=3), it processed the [screenshot link url](http://i.imgur.com/HnWYt8A.png) and responded with:
+The `Size` slider controls the size of the square to be cropped, being 100% is the entire square and 0% is nothing.
 
-> ChessFenBot [◕ _ ◕]<sup>\* *I make FENs*</sup>
-> 
-> ---
-> 
-> I attempted to generate a chessboard layout from the posted image, with an overall certainty of **99.9916%**.
-> 
-> FEN: [1nkr4/1p3q1p/pP4pn/P1r5/3N1p2/2b2B1P/5PPB/2RQ1RK1](http://www.fen-to-image.com/image/30/1nkr1111/1p111q1p/pP1111pn/P1r11111/111N1p11/11b11B1P/11111PPB/11RQ1RK1.png)
-> 
-> Here is a link to a [Lichess Analysis](http://www.lichess.org/analysis/1nkr4/1p3q1p/pP4pn/P1r5/3N1p2/2b2B1P/5PPB/2RQ1RK1_w) - White to play
-> 
-> ---
-> 
-> <sup>Yes I am a machine learning bot | [`How I work`](https://github.com/Elucidation/tensorflow_chessbot 'Must go deeper') | Reply with a corrected FEN or [Editor link)](http://www.lichess.org/editor/r1b1r1k1/5pp1/p1pR1nNp/8/2B5/2q5/P1P1Q1PP/5R1K) to add to my next training dataset</sup>
+### Reading the UI
 
-## Running with Docker
+The left image is the raw image with the red square being where the cropped image is taken from.
 
-Automated build on Docker available at `elucidation/tensorflow_chessbot`
+The right image is the cropped image if a chessboard is not detected otherwise it is a representation of the board.
+Any green arrow represents the best move for white, and any red arrow represents the best move for black.
+The red square is the attacker if you are in check.
+The yellow squares are the other pieces attacked by the attacker.
 
-Populate your own `auth_config.py` which has the form
+The far right is a textual representation of the board,
+with the capital letters being white and the lowercase letters being black.
 
-```py
-USERNAME='<NAME>'
-PASSWORD='<PASSWORD>'
-USER_AGENT='<AGENT INFO>'
-```
+Under the right image is the best move for white and black.
 
-
-Then you can download and run the docker image passing this config file using:
-
-```
-docker run -dt --rm --name cfb -v <local_auth_file>:/tcb/auth_config.py elucidation/tensorflow_chessbot
-```
+The title shows the certainty of the board positions.
