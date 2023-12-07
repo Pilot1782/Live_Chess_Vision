@@ -145,8 +145,6 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     # scores_x = np.array([np.median(np.diff(s)) for s in seqs_x])
     # scores_y = np.array([np.median(np.diff(s)) for s in seqs_y])
 
-    # TODO(elucidation): Choose heuristic score between step size and hough response
-
     best_seq_x = seqs_x[scores_x.argmax()]
     best_seq_y = seqs_y[scores_y.argmax()]
 

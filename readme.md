@@ -4,7 +4,7 @@ TensorFlow Chessbot - /u/ChessFenBot [◕ _ ◕]<sup>\* *I make FENs*</sup>
 
 ### Setting up the virtual environment
 
-This uses Python 3, pip3 and virtualenv, if you don't have these installed you can use:
+This uses Python 3, pip3, and virtualenv. If you don't have these installed, you can use:
 
 ```
 sudo apt-get install python3-pip
@@ -31,11 +31,11 @@ usage: tensorflow_chessbot.py [-h] [--url URL] [--filepath FILEPATH]
  
  optional arguments:
    -h, --help           show this help message and exit
-   --url URL            URL of image (ex. http://imgur.com/u4zF5Hj.png)
+   --url URL            URL of image (ex. https://imgur.com/u4zF5Hj.png)
   --filepath FILEPATH  filepath to image (ex. u4zF5Hj.png)
 ```
 
-For example to run on the provided `example_input.png` ![example_input](example_input.png)
+For example, to run on the provided `example_input.png` ![example_input](example_input.png)
 
 ```
 ./tensorflow_chessbot.py --filepath example_input.png
@@ -65,23 +65,23 @@ Predicted FEN: bn4kN/p5bp/1p3npB/3p4/8/5Q2/PPP2PPP/R3R1K1
 Final Certainty: 100.0%
 ```
 
-Which would be:
-
+Which would be
 ![predicted](http://www.fen-to-image.com/image/60/bn4kN/p5bp/1p3npB/3p4/8/5Q2/PPP2PPP/R3R1K1.png)
 
 ## Live Streaming
 
-The live streaming script `live.py` will spawn a GUI after you select the window for it to watch.
+The live-streaming script `live.py` will spawn a GUI after you select the window for it to watch.
 Only one window is used as apposed to the entire screen to reduce the amount of processing required.
 
 ![Gui](GUI_example.png)
 
 ### Controls
 
-The `Y%` slider controls the percent shift up or down, being 100% is the top and -100% is the bottom.
-The `X%` slider controls the percent shift left or right, being 100% is the right and -100% is the left.
+The `Y%` slider controls the percent shift up or down, being 100% the top and -100% is the bottom.
 
-The `Size` slider controls the size of the square to be cropped, being 100% is the entire square and 0% is nothing.
+The `X%` slider controls the percent shift left or right, being 100% the right and -100% is the left.
+
+The `Size` slider controls the size of the square to be cropped, being 100% the entire square and 0% is nothing.
 
 ### Reading the UI
 
@@ -95,6 +95,6 @@ The yellow squares are the other pieces attacked by the attacker.
 The far right is a textual representation of the board,
 with the capital letters being white and the lowercase letters being black.
 
-Under the right image is the best move for white and black.
+Under the right image is the best move for white and black, along with their respective evaluation.
 
 The title shows the certainty of the board positions.

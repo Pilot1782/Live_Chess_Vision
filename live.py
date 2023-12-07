@@ -309,10 +309,15 @@ class GUI(threading.Thread):
         if best_move is not None:
             w_uci_move = best_move[0].move.uci() if best_move[0] is not None else "..."
             b_uci_move = best_move[1].move.uci() if best_move[1] is not None else "..."
+
+            w_eval = best_move[0].info["score"].white().score(mate_score=1000000) if best_move[0] is not None else 0
+            b_eval = best_move[1].info["score"].white().score(mate_score=1000000) if best_move[1] is not None else 0
             if w_uci_move == "0000" or b_uci_move == "0000":
                 self.status.configure(text="Resign")
             else:
-                self.status.configure(text=f"Best moves:\nW: {w_uci_move}\nB:{b_uci_move}")
+                self.status.configure(text=f"Best moves:\n"
+                                           f"W: {w_uci_move}, {w_eval}\n"
+                                           f"B: {b_uci_move}, {-b_eval}")
 
         if cropped is not None:
             cropped = Image.fromarray(cropped)
@@ -435,7 +440,7 @@ def stream():
     # Initialize predictor, takes a while, but only needed once
     predictor = ChessboardPredictor()
     engine = chess.engine.SimpleEngine.popen_uci("stockfish/stockfish-windows-x86-64-avx2.exe")
-    camera.start(target_fps=15, video_mode=True)
+    camera.start(target_fps=10, video_mode=True)
     gui = GUI()
 
     time.sleep(1.0)
@@ -532,10 +537,10 @@ def stream():
                             fills[attack] = 'yellow'
 
             try:
-                best_move_w = engine.play(w_board, chess.engine.Limit(time=0.1),
-                                          ponder=True) if w_status == chess.STATUS_VALID else None
-                best_move_b = engine.play(b_board, chess.engine.Limit(time=0.1),
-                                          ponder=True) if b_status == chess.STATUS_VALID else None
+                best_move_w = engine.play(w_board, chess.engine.Limit(time=0.2),
+                                          ponder=True, info=chess.engine.INFO_SCORE) if w_status == chess.STATUS_VALID else None
+                best_move_b = engine.play(b_board, chess.engine.Limit(time=0.2),
+                                          ponder=True, info=chess.engine.INFO_SCORE) if b_status == chess.STATUS_VALID else None
             except chess.engine.EngineTerminatedError:
                 print(f"Stockfish died, fen: {short_fen}")
                 break
