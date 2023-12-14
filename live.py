@@ -45,20 +45,15 @@ from io import StringIO
 from typing import Union, Callable
 
 import PIL.Image
+import PIL.Image as Image
+import PIL.ImageDraw as ImageDraw
 import PIL.ImageTk
 import chess
 import chess.engine
 import chess.svg
 import dxcam
-import pygetwindow
-from reportlab.graphics import renderPM
-from svglib.svglib import svg2rlg
-
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Ignore Tensorflow INFO debug messages
-import tensorflow as tf
 import numpy as np
-import PIL.Image as Image
-import PIL.ImageDraw as ImageDraw
+import pygetwindow
 from customtkinter import (
     CTk,
     CTkLabel,
@@ -67,10 +62,16 @@ from customtkinter import (
     VERTICAL,
     CTkImage, CTkButton, CTkEntry, CTkFrame,
 )
+from reportlab.graphics import renderPM
+from svglib.svglib import svg2rlg
 
-from helper_functions import shortenFEN
-import helper_image_loading
 import chessboard_finder
+import helper_image_loading
+from helper_functions import shortenFEN
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Ignore Tensorflow INFO debug messages
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Ignore floating point off by one error
+import tensorflow as tf
 
 
 def load_graph(frozen_graph_filepath):
@@ -107,7 +108,7 @@ class ChessboardPredictor(object):
         self.probabilities = graph.get_tensor_by_name('tcb/probabilities:0')
         print("\t Model restored.")
 
-    def getPrediction(self, tiles):
+    def get_prediction(self, tiles):
         """Run trained neural network on tiles generated from image"""
         if tiles is None or len(tiles) == 0:
             print("Couldn't parse chessboard")
@@ -127,15 +128,15 @@ class ChessboardPredictor(object):
 
         # Convert guess into FEN string
         # guessed is tiles A1-H8 rank-order, so to make a FEN we just need to flip the files from 1-8 to 8-1
-        def labelIndex2Name(label_index):
+        def label_index2name(label_index):
             return ' ' if label_index == 0 else ' KQRBNPkqrbnp'[label_index]
 
-        pieceNames = list(map(lambda k: '1' if k == 0 else labelIndex2Name(k), guessed))  # exchange ' ' for '1' for FEN
-        fen = '/'.join([''.join(pieceNames[i * 8:(i + 1) * 8]) for i in reversed(range(8))])
+        piece_names = list(map(lambda k: '1' if k == 0 else label_index2name(k), guessed))
+        fen = '/'.join([''.join(piece_names[i * 8:(i + 1) * 8]) for i in reversed(range(8))])
         return fen, tile_certainties
 
     # Wrapper for chessbot
-    def makePrediction(self, url):
+    def make_prediction(self, url):
         """Try and return a FEN prediction and certainty for URL, return Nones otherwise"""
         img, url = helper_image_loading.loadImageFromURL(url, max_size_bytes=2000000)
         result = [None, None, None]
@@ -162,7 +163,7 @@ class ChessboardPredictor(object):
             return result
 
         # Make prediction on input tiles
-        fen, tile_certainties = self.getPrediction(tiles)
+        fen, tile_certainties = self.get_prediction(tiles)
 
         # Use the worst case certainty as our final uncertainty score
         certainty = tile_certainties.min()
@@ -199,43 +200,39 @@ class GUI(threading.Thread):
         self.root = None
         self.preview_full = None
 
-        self.is_active = True
+        self.active = True
         self.start()
 
     def callback(self):
-        self.is_active = False
+        self.active = False
         self.root.quit()
 
         sys.exit(0)
 
-    def isActive(self):
-        return self.is_active
+    def is_active(self):
+        return self.active
 
     def run(self):
         self.root = CTk()
         self.root.protocol("WM_DELETE_WINDOW", self.callback)
 
-        # layout:
-        """
-        | Y% Slider | Full preview | | | Cropped preview | Eval slider |
-        |           |              | | | Status          |             |
-        """
-
-        self.preview_full = CTkLabel(self.root, width=200, height=200,
-                                     image=CTkImage(
-                                         PIL.Image.fromarray(np.zeros((200, 200, 3), dtype=np.uint8)),
-                                         size=(200, 200)
-                                     ),
-                                     text="",
-                                     )
+        self.preview_full = CTkLabel(
+            self.root, width=200, height=200,
+            image=CTkImage(
+                PIL.Image.fromarray(np.zeros((200, 200, 3), dtype=np.uint8)),
+                size=(200, 200)
+            ),
+            text="",
+        )
         self.preview_full.grid(row=0, column=1)
-        self.preview_cropped = CTkLabel(self.root, width=200, height=200,
-                                        image=CTkImage(
-                                            PIL.Image.fromarray(np.zeros((200, 200, 3), dtype=np.uint8)),
-                                            size=(200, 200)
-                                        ),
-                                        text="",
-                                        )
+        self.preview_cropped = CTkLabel(
+            self.root, width=200, height=200,
+            image=CTkImage(
+                PIL.Image.fromarray(np.zeros((200, 200, 3), dtype=np.uint8)),
+                size=(200, 200)
+            ),
+            text="",
+        )
         self.preview_cropped.grid(row=0, column=3)
 
         self.status = CTkLabel(self.root, text="...")
@@ -245,17 +242,20 @@ class GUI(threading.Thread):
         # (as a percentage of the image)
 
         # cropping controls
-        self.crop_size_slider = CTkSlider(self.root, from_=1, to=100,
-                                          orientation=HORIZONTAL, number_of_steps=99)
+        self.crop_size_slider = CTkSlider(
+            self.root, from_=1, to=100,
+            orientation=HORIZONTAL, number_of_steps=99)
         self.crop_size_slider.set(100)
         self.crop_size_slider.grid(row=2, column=1)
 
-        self.crop_x_slider = CTkSlider(self.root, from_=-100, to=100,
-                                       orientation=HORIZONTAL, number_of_steps=100)
+        self.crop_x_slider = CTkSlider(
+            self.root, from_=-100, to=100,
+            orientation=HORIZONTAL, number_of_steps=100)
         self.crop_x_slider.set(0)
         self.crop_x_slider.grid(row=3, column=1)
-        self.crop_y_slider = CTkSlider(self.root, from_=-100, to=100,
-                                       orientation=VERTICAL, number_of_steps=100)
+        self.crop_y_slider = CTkSlider(
+            self.root, from_=-100, to=100,
+            orientation=VERTICAL, number_of_steps=100)
         self.crop_y_slider.set(0)
         self.crop_y_slider.grid(row=0, column=0)
 
@@ -280,7 +280,7 @@ class GUI(threading.Thread):
         self.root.mainloop()
 
     def crop(self, img: np.ndarray):
-        if not self.isActive():
+        if not self.is_active():
             return img
 
         height, width, _ = img.shape
@@ -292,11 +292,11 @@ class GUI(threading.Thread):
 
         # get crop parameters
         crop_width = int(self.crop_size / 100 * min(width, height))
-        crop_height = int(self.crop_size / 100 * min(width, height))
+        crop_height = crop_width
 
         # the center of the image is (width // 2, height // 2)
         crop_x = int((width - crop_width) * (self.crop_x / 100 / 2 + 0.5) + crop_width / 2)
-        crop_y = int((height - crop_height) * (self.crop_y * -1 / 100 / 2 + 0.5) + crop_height / 2)
+        crop_y = int((height - crop_height) * (-self.crop_y / 100 / 2 + 0.5) + crop_height / 2)
 
         self.x_label.configure(text=f"X%: {self.crop_x}")
         self.y_label.configure(text=f"Y%: {self.crop_y}")
@@ -311,26 +311,26 @@ class GUI(threading.Thread):
 
         return img
 
-    def updatePreview(
+    def update_preview(
             self,
             img: np.ndarray,
             cropped: np.ndarray = None,
             certainty: float = None,
-            best_move: tuple[chess.engine.PlayResult] = None,
+            best_move: tuple[chess.engine.PlayResult | None, chess.engine.PlayResult | None] = (None, None),
             fps: float = None,
     ):
-        if not self.isActive():
+        if not self.is_active():
             return
 
-        if best_move is not None:
-            w_uci_move = best_move[0].move.uci() if best_move[0] is not None and best_move[0] is not None else "..."
-            b_uci_move = best_move[1].move.uci() if best_move[1] is not None and best_move[
-                1].move is not None else "..."
+        if best_move is not None and best_move != (None, None):
+            w_move, b_move = best_move
+            w_uci_move = w_move.move.uci() if w_move is not None and w_move is not None else "..."
+            b_uci_move = b_move.move.uci() if b_move is not None and b_move.move is not None else "..."
 
-            w_eval = best_move[0].info["score"].white().score(mate_score=1000000) \
-                if best_move[0] is not None else 0
-            b_eval = (best_move[1].info["score"].white().score(mate_score=1000000)
-                      if best_move[1] is not None else 0) * -1
+            w_eval = w_move.info["score"].white().score(mate_score=1000000) \
+                if w_move is not None else 0
+            b_eval = (b_move.info["score"].white().score(mate_score=1000000)
+                      if b_move is not None else 0) * -1
 
             a_eval = bind((w_eval - b_eval) / 2, min_val=-1000, max_val=1000)
 
@@ -339,20 +339,23 @@ class GUI(threading.Thread):
             # if there is a forced mate in n, then the eval is M1000000 - n
             if w_eval >= 999950:
                 w_eval = f"M{1000000 - w_eval}"
+            elif w_eval == 0:
+                w_eval = "Resign"
+            elif w_eval <= -999950:
+                w_eval = f"L{1000000 + w_eval}"
+
             if b_eval >= 999950:
                 b_eval = f"M{1000000 - b_eval}"
+            elif b_eval == 0:
+                b_eval = "Resign"
+            elif b_eval <= -999950:
+                b_eval = f"L{1000000 + b_eval}"
 
-            if w_uci_move == 0 or b_uci_move == 0:
-                self.status.configure(
-                    text="Resign (" + (
-                        f'B: {b_uci_move}' if w_uci_move == 0 else f'W: {w_uci_move}'
-                    ))
-            else:
-                self.status.configure(
-                    text=f"{f'FPS: {round(fps, 0)}, ' if fps is not None else ''}"
-                         "Best moves:\n"
-                         f"W: {w_uci_move}, {w_eval}\n"
-                         f"B: {b_uci_move}, {b_eval}")
+            self.status.configure(
+                text=f"{f'FPS: {round(fps, 0)}, ' if fps is not None else ''}"
+                     "Best moves:\n"
+                     f"W: {w_uci_move}, {w_eval}\n"
+                     f"B: {b_uci_move}, {b_eval}")
 
         if cropped is not None:
             cropped = Image.fromarray(cropped)
@@ -466,37 +469,37 @@ class FloatSpinbox(CTkFrame):
 def stream():
     # Selecting the correct game window
     try:
-        videoGameWindows = pygetwindow.getAllWindows()
-        titles = [window.title for window in videoGameWindows]
+        video_game_windows = pygetwindow.getAllWindows()
+        titles = [window.title for window in video_game_windows]
 
         if "VRChat" in titles:
-            videoGameWindow = pygetwindow.getWindowsWithTitle("VRChat")[0]
+            video_game_window = pygetwindow.getWindowsWithTitle("VRChat")[0]
         else:
             print("=== All Windows ===")
-            for index, window in enumerate(videoGameWindows):
+            for index, window in enumerate(video_game_windows):
                 # only output the window if it has a meaningful title
                 if window.title:
                     print("[{}]: {}".format(index, window.title))
             # have the user select the window they want
             try:
-                userInput = int(input(
+                user_input = int(input(
                     "Please enter the number corresponding to the window you'd like to select: "))
             except ValueError:
                 print("You didn't enter a valid number. Please try again.")
                 return
             # "save" that window as the chosen window for the rest of the script
-            videoGameWindow: pygetwindow.Window = videoGameWindows[userInput]
+            video_game_window: pygetwindow.Window = video_game_windows[user_input]
     except Exception as err:
         print("Failed to select game window: {}".format(err))
         return
 
     # Activate that Window
-    activationRetries = 30
-    activationSuccess = False
-    while activationRetries > 0:
+    activation_retries = 30
+    activation_success = False
+    while activation_retries > 0:
         try:
-            videoGameWindow.activate()
-            activationSuccess = True
+            video_game_window.activate()
+            activation_success = True
             break
         except pygetwindow.PyGetWindowException as we:
             print("Failed to activate game window: {}".format(str(we)))
@@ -504,27 +507,30 @@ def stream():
         except Exception as err:
             print("Failed to activate game window: {}".format(str(err)))
             print(
-                "Read the relevant restrictions here: https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow")
-            activationSuccess = False
+                "Read the relevant restrictions here: "
+                "https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow")
+            activation_success = False
             break
         # wait a little bit before the next try
         time.sleep(1.0)
-        activationRetries = activationRetries - 1
+        activation_retries = activation_retries - 1
     # if we failed to activate the window, then we'll be unable to send input to it,
     # so exits the script now
-    if not activationSuccess:
+    if not activation_success:
         return
     print("Successfully activated the game window...")
 
     # get the window region
-    rect = videoGameWindow._getWindowRect()
+    rect = video_game_window._getWindowRect()
     region = (rect.left, rect.top, rect.right, rect.bottom)
 
     camera = dxcam.create(device_idx=0, region=region)
     if camera is None:
         print("""DXCamera failed to initialize. Some common causes are:
-            1. You are on a laptop with both an integrated GPU and discrete GPU. Go into Windows Graphic Settings, select python.exe and set it to Power Saving Mode.
-             If that doesn't work, then read this: https://github.com/SerpentAI/D3DShot/wiki/Installation-Note:-Laptops
+            1. You are on a laptop with both an integrated GPU and discrete GPU.
+               Go into Windows Graphic Settings,select python.exe and set it to Power Saving Mode.
+               If that doesn't work, then read this:
+               https://github.com/SerpentAI/D3DShot/wiki/Installation-Note:-Laptops
             2. The game is an exclusive full screen game. Set it to windowed mode.""")
         return
 
@@ -563,10 +569,10 @@ def stream():
         "ars_b": set(),
     }
 
-    while gui.isActive():
+    while gui.is_active():
         t_start = time.perf_counter()
         t_tmp = t_start
-        if not gui.isActive():
+        if not gui.is_active():
             break
 
         src = camera.get_latest_frame()
@@ -574,10 +580,10 @@ def stream():
         # crop frame
         frame = gui.crop(src)
         if board_detected:
-            gui.updatePreview(img=src)
+            gui.update_preview(img=src)
         else:
-            gui.updatePreview(img=src, cropped=frame)
-        print(f"{round(time.perf_counter() - t_tmp, 3)}s Initial view update")
+            gui.update_preview(img=src, cropped=frame)
+        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial view update")
 
         t_tmp = time.perf_counter()
         # Look for chessboard in image, get corners and split chessboard into tiles
@@ -588,7 +594,7 @@ def stream():
             board_detected = False
             continue
 
-        # Exit on failure to find chessboard in image
+        # skip on failure to find chessboard in image
         if tiles is None or len(tiles) == 0:
             print("Couldn't find chessboard in image")
             board_detected = False
@@ -599,8 +605,8 @@ def stream():
         br = (corners[2], corners[3])
         cropped = frame[tl[1]:br[1], tl[0]:br[0]]
 
-        fen, tile_certainties = predictor.getPrediction(tiles)
-        print(f"{round(time.perf_counter() - t_tmp, 3)}s Fen made")
+        fen, tile_certainties = predictor.get_prediction(tiles)
+        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fen made")
         short_fen = shortenFEN(fen)
 
         # Use the worst case certainty as our final uncertainty score
@@ -615,6 +621,7 @@ def stream():
             w_board = chess.Board(w_fen)
             b_board = chess.Board(b_fen)
 
+            # reset cache
             __cache = {
                 "svg": None,
                 "changes": {"best_w", "best_b", "fills", "ars_w", "ars_b"},
@@ -640,12 +647,13 @@ def stream():
                 print(w_board, w_status)
                 print(b_board, b_status)
 
-            print(f"{round(time.perf_counter() - t_tmp, 3)}s Initial board checks")
+            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial board checks")
 
             t_tmp = time.perf_counter()
             try:
                 if len(__cache["best_w"]) < 3 and w_status == chess.STATUS_VALID:
-                    best_move_w = engine.play(w_board, chess.engine.Limit(time=0.1),
+                    best_move_w = engine.play(w_board,
+                                              chess.engine.Limit(time=(0.1 if len(__cache["best_w"]) < 2 else 0.05)),
                                               info=chess.engine.INFO_SCORE)
                     if best_move_w.move is not None:
                         __cache["eval_w"] = best_move_w.info["score"]
@@ -654,7 +662,8 @@ def stream():
                             __cache["changes"].update(("best_w",))
 
                 if len(__cache["best_b"]) < 3 and b_status == chess.STATUS_VALID:
-                    best_move_b = engine.play(b_board, chess.engine.Limit(time=0.1),
+                    best_move_b = engine.play(b_board,
+                                              chess.engine.Limit(time=(0.1 if len(__cache["best_b"]) < 2 else 0.05)),
                                               info=chess.engine.INFO_SCORE)
                     if best_move_b.move is not None:
                         __cache["eval_b"] = best_move_b.info["score"]
@@ -664,7 +673,7 @@ def stream():
             except chess.engine.EngineTerminatedError:
                 print(f"Stockfish died, fen: {short_fen} board status: {w_status} {b_status}")
                 break
-            print(f"{round(time.perf_counter() - t_tmp, 3)}s Stockfish eval")
+            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Stockfish eval")
 
             if __cache["svg"] is not None and "best_w" not in __cache["changes"] and "best_b" not in __cache["changes"]:
                 svg = __cache["svg"]
@@ -693,7 +702,7 @@ def stream():
                     ars.extend(_ars)
                 else:
                     ars.extend(__cache["ars_b"])
-                print(f"{round(time.perf_counter() - t_tmp, 3)}s Arrows made")
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Arrows made")
 
                 # only change fills if there is a board change
                 t_tmp = time.perf_counter()
@@ -711,8 +720,9 @@ def stream():
                             attacks = w_board.attacks(att)  # att -> attacked square
                             attackers = w_board.attackers(chess.WHITE, att)  # square -> att
                             for attack in attacks:
-                                if not w_board.piece_at(attack) is None and w_board.piece_at(
-                                        attack).color == chess.WHITE and w_board.piece_at(attack).piece_type != chess.KING:
+                                if not w_board.piece_at(attack) is None \
+                                        and w_board.piece_at(attack).color == chess.WHITE \
+                                        and w_board.piece_at(attack).piece_type != chess.KING:
                                     fills[attack] = 'yellow'
 
                             for attacker in attackers:
@@ -731,8 +741,9 @@ def stream():
                             attacks = b_board.attacks(att)  # att -> attacked square
                             attackers = b_board.attackers(chess.BLACK, att)  # square -> att
                             for attack in attacks:
-                                if not b_board.piece_at(attack) is None and b_board.piece_at(
-                                        attack).color == chess.BLACK and b_board.piece_at(attack).piece_type != chess.KING:
+                                if not b_board.piece_at(attack) is None \
+                                        and b_board.piece_at(attack).color == chess.BLACK \
+                                        and b_board.piece_at(attack).piece_type != chess.KING:
                                     fills[attack] = 'yellow'
 
                             for attacker in attackers:
@@ -742,7 +753,7 @@ def stream():
                     __cache["fills"] = fills
                 else:
                     fills = __cache["fills"]
-                print(f"{round(time.perf_counter() - t_tmp, 3)}s Fills made")
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fills made")
 
                 t_tmp = time.perf_counter()
                 svg = chess.svg.board(
@@ -752,49 +763,55 @@ def stream():
                     size=200,
                     coordinates=False,
                 )
-                print(f"{round(time.perf_counter() - t_tmp, 3)}s SVG generation")
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG generation")
+
+                # ----
+                # This is the slowest section of the code,
+                # so we should avoid it if possible
 
                 t_tmp = time.perf_counter()
                 svg = svg2rlg(StringIO(svg))
-                print(f"{round(time.perf_counter() - t_tmp, 3)}s SVG to ReportLab")
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG to ReportLab")
 
                 t_tmp = time.perf_counter()
                 pil_svg = renderPM.drawToPIL(svg)
-                print(f"{round(time.perf_counter() - t_tmp, 3)}s SVG rendered to PIL")
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG rendered to PIL")
+
+                # ----
 
                 svg = np.array(pil_svg)
 
                 # update cache
                 __cache["svg"] = svg
-                __cache["changes"].clear()
             cropped = svg
 
-            if __cache["best_w"] and best_move_w is None:
-                best_move_w = chess.engine.PlayResult(
-                    move=chess.Move.from_uci(list(__cache["best_w"])[0]),
-                    ponder=None,
-                    info={"score": __cache["eval_w"]},
-                )
+        if __cache["best_w"] and best_move_w is None:
+            best_move_w = chess.engine.PlayResult(
+                move=chess.Move.from_uci(list(__cache["best_w"])[0]),
+                ponder=None,
+                info={"score": __cache["eval_w"]},
+            )
 
-            if __cache["best_b"] and best_move_b is None:
-                best_move_b = chess.engine.PlayResult(
-                    move=chess.Move.from_uci(list(__cache["best_b"])[0]),
-                    ponder=None,
-                    info={"score": __cache["eval_b"]},
-                )
+        if __cache["best_b"] and best_move_b is None:
+            best_move_b = chess.engine.PlayResult(
+                move=chess.Move.from_uci(list(__cache["best_b"])[0]),
+                ponder=None,
+                info={"score": __cache["eval_b"]},
+            )
 
         t_tmp = time.perf_counter()
-        gui.updatePreview(
+        gui.update_preview(
             img=src, cropped=cropped,
             certainty=certainty * 100,
             best_move=(best_move_w, best_move_b),
             fps=1 / (time.perf_counter() - t_start),
         )
-        print(f"{round(time.perf_counter() - t_tmp, 3)}s Final view update")
+        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Final view update")
+        __cache["changes"].clear()
 
         t_end = time.perf_counter()
 
-        print(f"{round(t_end - t_start, 3)}s Prediction total\n")
+        print(f"{round(t_end - t_start, 3) * 1000}ms Prediction total ({round(1 / (t_end - t_start), 0)}fps)\n")
 
     predictor.close()
     gui.callback()

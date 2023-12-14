@@ -24,3 +24,4 @@ praw.ini
 .idea/
 stockfish/
 testing.py
+/.fleet/
