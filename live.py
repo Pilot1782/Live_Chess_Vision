@@ -37,11 +37,13 @@
 #
 # A lot of tensorflow code here is heavily adopted from the
 # [tensorflow tutorials](https://www.tensorflow.org/versions/0.6.0/tutorials/pdes/index.html)
+import copy
 import os
 import sys
 import threading
 import time
 from io import StringIO
+from itertools import repeat
 from typing import Union, Callable
 
 import PIL.Image
@@ -51,6 +53,7 @@ import PIL.ImageTk
 import chess
 import chess.engine
 import chess.svg
+import cv2
 import dxcam
 import numpy as np
 import pygetwindow
@@ -73,6 +76,9 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Ignore Tensorflow INFO debug message
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Ignore floating point off by one error
 import tensorflow as tf
 
+# global vars
+cache = {}
+
 
 def load_graph(frozen_graph_filepath):
     # Load and parse the protobuf file to retrieve the unserialized graph_def.
@@ -90,6 +96,58 @@ def load_graph(frozen_graph_filepath):
 def bind(num, min_val, max_val):
     """Bind num between min and max"""
     return max(min(num, max_val), min_val)
+
+
+def verticalness(_img):
+    """
+    Returns the standard deviation of vertical and horizontal lines in the image.
+
+    :param _img: the grayscale numpy array of the image
+    :return:
+    """
+
+    gx, gy = np.gradient(_img)
+
+    gx_pos = gx.copy()
+    gx_pos[gx_pos < 0] = 0
+    gx_neg = -gx.copy()
+    gx_neg[gx_neg < 0] = 0
+
+    gy_pos = gy.copy()
+    gy_pos[gy_pos < 0] = 0
+    gy_neg = -gy.copy()
+    gy_neg[gy_neg < 0] = 0
+
+    # 1-D amplitude of hough transform for gradients about X & Y axes
+    hough_gx = gx_pos.sum(axis=1) * gx_neg.sum(axis=1)
+    hough_gy = gy_pos.sum(axis=0) * gy_neg.sum(axis=0)
+
+    return min(hough_gx.std() / hough_gx.size,
+               hough_gy.std() / hough_gy.size)
+
+
+def rotate_vertical(_img, max_rot=90):
+    """
+    Rotates the image to be vertical, up to max_rot degrees.
+
+    :param _img: the grayscale numpy array of the image
+    :param max_rot: the maximum number of degrees to rotate the image
+    :return:
+    """
+    stds = np.array(list(zip(range(-max_rot, max_rot + 1), repeat(0))))
+    for i in range(-max_rot, max_rot + 1):
+        stds[i + max_rot][1] = verticalness(_img.rotate(i, expand=True))
+
+    # get the rotations with stds over 8000
+    rotations = stds[stds[:, 1] > 8000]
+
+    # get the smallest rotation
+    rotation = rotations[rotations[:, 1].argmin()][0]
+
+    # rotate the image
+    _img.rotate(rotation, expand=True).show()
+
+    return rotation
 
 
 class ChessboardPredictor(object):
@@ -185,6 +243,8 @@ class GUI(threading.Thread):
 
     def __init__(self):
         super().__init__()
+        self.brightness_label = None
+        self.rotation_slider = None
         self.eval_slider = None
         self.status = None
         self.y_label = None
@@ -243,19 +303,24 @@ class GUI(threading.Thread):
 
         # cropping controls
         self.crop_size_slider = CTkSlider(
-            self.root, from_=1, to=100,
-            orientation=HORIZONTAL, number_of_steps=99)
+            self.root, from_=0, to=100,
+            orientation=HORIZONTAL, number_of_steps=20)
         self.crop_size_slider.set(100)
         self.crop_size_slider.grid(row=2, column=1)
+        self.rotation_slider = CTkSlider(
+            self.root, from_=0, to=180,
+            orientation=HORIZONTAL, number_of_steps=38)
+        self.rotation_slider.set(100)
+        self.rotation_slider.grid(row=2, column=3)
 
         self.crop_x_slider = CTkSlider(
             self.root, from_=-100, to=100,
-            orientation=HORIZONTAL, number_of_steps=100)
+            orientation=HORIZONTAL, number_of_steps=40)
         self.crop_x_slider.set(0)
         self.crop_x_slider.grid(row=3, column=1)
         self.crop_y_slider = CTkSlider(
             self.root, from_=-100, to=100,
-            orientation=VERTICAL, number_of_steps=100)
+            orientation=VERTICAL, number_of_steps=40)
         self.crop_y_slider.set(0)
         self.crop_y_slider.grid(row=0, column=0)
 
@@ -266,9 +331,12 @@ class GUI(threading.Thread):
         self.size_label.grid(row=2, column=2)
         self.x_label = CTkLabel(self.root, text="X%")
         self.x_label.grid(row=3, column=2)
+        self.brightness_label = CTkLabel(self.root, text="Bgt%")
+        self.brightness_label.grid(row=1, column=4)
 
         # eval (pos is better for white, neg is better for black)
-        self.eval_slider = CTkSlider(self.root, from_=-1000, to=1000, fg_color="black", progress_color="white",
+        self.eval_slider = CTkSlider(self.root, from_=-1000, to=1000,
+                                     fg_color="black", progress_color="white",
                                      orientation=VERTICAL)
         self.eval_slider.set(0)
         self.eval_slider.configure(state="disabled")
@@ -277,16 +345,26 @@ class GUI(threading.Thread):
         # set the default window size
         self.root.geometry("600x300")
 
+        # start the update loop
+        self.root.after(100, self.update)
+
         self.root.mainloop()
 
     def crop(self, img: np.ndarray):
-        if not self.is_active():
+        if not self.is_active() or any((
+                img is None,
+                len(img.shape) != 3,
+                img.shape[2] != 3,
+                self.crop_size_slider is None,
+                self.crop_x_slider is None,
+                self.crop_y_slider is None,
+        )):
             return img
 
         height, width, _ = img.shape
 
         # percentage of image to crop
-        self.crop_size = self.crop_size_slider.get()  # 1<->100
+        self.crop_size = bind(self.crop_size_slider.get(), 1, 100)  # 1<->100
         self.crop_x = self.crop_x_slider.get()  # -100<->100
         self.crop_y = self.crop_y_slider.get()  # -100<->100
 
@@ -311,16 +389,48 @@ class GUI(threading.Thread):
 
         return img
 
-    def update_preview(
-            self,
-            img: np.ndarray,
-            cropped: np.ndarray = None,
-            certainty: float = None,
-            best_move: tuple[chess.engine.PlayResult | None, chess.engine.PlayResult | None] = (None, None),
-            fps: float = None,
-    ):
+    def rotate(self, img: np.ndarray):
+        if not self.is_active() or any((
+                img is None,
+                len(img.shape) != 3,
+                img.shape[2] != 3,
+                self.rotation_slider is None,
+        )):
+            return img
+
+        # rotate image
+        max_rotation = self.rotation_slider.get()  # 0<->180
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        angle = rotate_vertical(Image.fromarray(gray), max_rot=max_rotation)
+        img = Image.fromarray(img).rotate(angle, expand=True)
+        img = np.array(img)
+
+        return img
+
+    def update(self):
         if not self.is_active():
             return
+
+        try:
+            self.update_preview()
+        except Exception as e:
+            print("Exception in update loop: %s" % e)
+        finally:
+            self.root.after(100, self.update)
+
+    def update_preview(self):
+        global cache
+        print("Updating preview")
+
+        if not self.is_active() or cache is None:
+            return
+
+        best_move = cache["best_moves"]
+        img = cache["img"]
+        cropped = cache["cropped"]
+        fps = cache["fps"]
+        certainty = cache["certainty"]
 
         if best_move is not None and best_move != (None, None):
             w_move, b_move = best_move
@@ -363,29 +473,30 @@ class GUI(threading.Thread):
             cropped = helper_image_loading.resizeAsNeeded(cropped, max_size=(200, 200), max_fail_size=(3000, 3000))
             self.preview_cropped.configure(image=CTkImage(cropped, size=cropped.size))
 
-        # resize to 200 a tall but preserve aspect ratio
-        img = Image.fromarray(img)
-        width, height = img.size
+        if img is not None:
+            # resize to 200 a tall but preserve aspect ratio
+            img = Image.fromarray(img)
+            width, height = img.size
 
-        # draw a box where the crop will be
-        crop_w = int(self.crop_size / 100 * min(width, height))
-        crop_h = int(self.crop_size / 100 * min(width, height))
-        crop_x = int((width - crop_w) * (self.crop_x / 100 / 2 + 0.5) + crop_w / 2)
-        crop_y = int((height - crop_h) * (self.crop_y * -1 / 100 / 2 + 0.5) + crop_h / 2)
-        tl = ((crop_x - crop_w // 2), (crop_y - crop_h // 2))
-        br = ((crop_x + crop_w // 2), (crop_y + crop_h // 2))
-        draw = ImageDraw.Draw(img)
-        draw.rectangle([tl, br], outline=(255, 0, 0), width=4)
-        img: Image = helper_image_loading.resizeAsNeeded(img, max_size=(200, 200), max_fail_size=(3000, 3000))
+            # draw a box where the crop will be
+            crop_w = int(self.crop_size / 100 * min(width, height))
+            crop_h = int(self.crop_size / 100 * min(width, height))
+            crop_x = int((width - crop_w) * (self.crop_x / 100 / 2 + 0.5) + crop_w / 2)
+            crop_y = int((height - crop_h) * (self.crop_y * -1 / 100 / 2 + 0.5) + crop_h / 2)
+            tl = ((crop_x - crop_w // 2), (crop_y - crop_h // 2))
+            br = ((crop_x + crop_w // 2), (crop_y + crop_h // 2))
+            draw = ImageDraw.Draw(img)
+            draw.rectangle([tl, br], outline=(255, 0, 0), width=4)
+            img: Image = helper_image_loading.resizeAsNeeded(img, max_size=(200, 200), max_fail_size=(3000, 3000))
 
-        # convert to tkinter image
-        img = CTkImage(img, size=img.size)
+            # convert to tkinter image
+            img = CTkImage(img, size=img.size)
 
-        # update preview
-        self.preview_full.configure(image=img)
+            # update preview
+            self.preview_full.configure(image=img)
 
-        # keep reference to prevent garbage collection
-        self.preview_full.image = img
+            # keep reference to prevent garbage collection
+            self.preview_full.image = img
 
         # update window title
         if certainty is not None:
@@ -462,6 +573,46 @@ class FloatSpinbox(CTkFrame):
         self.entry.insert(0, str(float(value)))
 
 
+class Cache(dict):
+    slots = ("changes", "__default", "__default_keys")
+    changes = set()
+    _default = dict()
+    _default_keys = set()
+
+    def __init__(self, default: dict[str, any]):
+        self._default = copy.deepcopy(default)
+        self._default_keys = set(default.keys())
+        super().__init__(copy.deepcopy(default))
+        self.changes = set()
+
+    def __setitem__(self, key, value):
+        if key in self._default_keys:
+            super().__setitem__(key, value)
+            self.changes.add(key)
+        else:
+            raise ValueError(f"Key {key} not in default dict: {self._default_keys}")
+
+    def __delitem__(self, key):
+        super().__delitem__(key)
+        self.changes.add(key)
+
+    def clear(self, keys: tuple = None):
+        if keys is None:
+            super().clear()
+            self.changes.clear()
+        else:
+            for key in keys:
+                self.__setitem__(key, copy.deepcopy(self._default[key]))
+
+    def clear_changes(self):
+        self.changes.clear()
+
+    def reset(self):
+        self.clear()
+        self.update(self._default)
+        self.changes.clear()
+
+
 ###########################################################
 # MAIN FUNCTION
 
@@ -524,7 +675,7 @@ def stream():
     rect = video_game_window._getWindowRect()
     region = (rect.left, rect.top, rect.right, rect.bottom)
 
-    camera = dxcam.create(device_idx=0, region=region)
+    camera = dxcam.create(device_idx=0, region=region, output_color="RGB")
     if camera is None:
         print("""DXCamera failed to initialize. Some common causes are:
             1. You are on a laptop with both an integrated GPU and discrete GPU.
@@ -538,13 +689,11 @@ def stream():
     predictor = ChessboardPredictor()
     engine = chess.engine.SimpleEngine.popen_uci("stockfish/stockfish-windows-x86-64-avx2.exe")
     camera.start(target_fps=10, video_mode=True)
-    gui = GUI()
 
     time.sleep(1.0)
 
     w_board = chess.Board()
     b_board = chess.Board()
-    board_detected = False
     """
     cache = {
         "svg": PIL object of the svg
@@ -556,64 +705,83 @@ def stream():
         "ars_w": set of arrows for white
         "ars_b": set of arrows for black
     """
-    __cache = {
+    default_cache = {
         "svg": None,
-        "changes": set(),
+        "img": None,
+        "cropped": None,
 
+        "fen": None,
         "best_w": set(),
         "best_b": set(),
+        "exp_w": set(),
+        "exp_b": set(),
+        "best_moves": (None, None),
         "eval_w": None,
         "eval_b": None,
         "fills": set(),
-        "ars_w": set(),
-        "ars_b": set(),
+        "ars_w": None,
+        "ars_b": None,
+
+        "fps": None,
+        "certainty": None,
     }
+    global cache
+    cache = Cache(default_cache)
+
+    gui = GUI()
 
     while gui.is_active():
         t_start = time.perf_counter()
-        t_tmp = t_start
         if not gui.is_active():
             break
+
+        # ---
+        # Get the frame and do some preprocessing
 
         src = camera.get_latest_frame()
 
         # crop frame
         frame = gui.crop(src)
-        if board_detected:
-            gui.update_preview(img=src)
-        else:
-            gui.update_preview(img=src, cropped=frame)
-        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial view update")
 
-        t_tmp = time.perf_counter()
+        if src != cache["img"]:
+            # rotate the frame
+            frame = gui.rotate(frame)
+        cache["img"] = src
+        # ---
+
+        # ---
+        # Find the corners and tiles of the chessboard
         # Look for chessboard in image, get corners and split chessboard into tiles
+        t_tmp = time.perf_counter()
         try:
             tiles, corners = chessboard_finder.findGrayscaleTilesInImage(frame)
         except ValueError:
             print("Couldn't parse chessboard")
-            board_detected = False
             continue
 
         # skip on failure to find chessboard in image
         if tiles is None or len(tiles) == 0:
             print("Couldn't find chessboard in image")
-            board_detected = False
+
+            cache["cropped"] = frame
             continue
 
-        board_detected = True
         tl = (corners[0], corners[1])
         br = (corners[2], corners[3])
         cropped = frame[tl[1]:br[1], tl[0]:br[0]]
+        # ---
 
+        # ---
+        # Make prediction on input tiles to find pieces
         fen, tile_certainties = predictor.get_prediction(tiles)
         print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fen made")
-        short_fen = shortenFEN(fen)
+        short_fen: str = shortenFEN(fen)
 
         # Use the worst case certainty as our final uncertainty score
         certainty = tile_certainties.min()
 
         # Has the board changed?
-        if w_board.fen() != short_fen + " w - - 0 1":
+        if short_fen != cache["fen"]:
             # the board has changed
             w_fen = short_fen + " w - - 0 1"
             b_fen = short_fen + " b - - 0 1"
@@ -621,18 +789,20 @@ def stream():
             w_board = chess.Board(w_fen)
             b_board = chess.Board(b_fen)
 
-            # reset cache
-            __cache = {
-                "svg": None,
-                "changes": {"best_w", "best_b", "fills", "ars_w", "ars_b"},
+            # change the cache
+            cache["fen"] = short_fen
+            cache.clear((
+                "best_w", "best_b",
+                "exp_w", "exp_b",
+                "ars_w", "ars_b",
+                "eval_w", "eval_b",
+                "svg",
+                "fills",
+            ))
+        # ---
 
-                "best_w": set(),
-                "best_b": set(),
-                "fills": set(),
-                "ars_w": set(),
-                "ars_b": set(),
-            }
-
+        # ---
+        # Update the SVG and find the best move for black and white
         best_move_w = None
         best_move_b = None
         if any((w_board.is_game_over(), w_board.is_checkmate(), w_board.is_stalemate())):
@@ -651,62 +821,97 @@ def stream():
 
             t_tmp = time.perf_counter()
             try:
-                if len(__cache["best_w"]) < 3 and w_status == chess.STATUS_VALID:
-                    best_move_w = engine.play(w_board,
-                                              chess.engine.Limit(time=(0.1 if len(__cache["best_w"]) < 2 else 0.05)),
-                                              info=chess.engine.INFO_SCORE)
-                    if best_move_w.move is not None:
-                        __cache["eval_w"] = best_move_w.info["score"]
-                        if best_move_w.move.uci() not in __cache["best_w"]:
-                            __cache["best_w"].update((best_move_w.move.uci(),))
-                            __cache["changes"].update(("best_w",))
+                if len(cache["best_w"]) < 3 and w_status == chess.STATUS_VALID:
+                    best_move_w = engine.play(
+                        w_board,
+                        chess.engine.Limit(time=(0.1 if len(cache["best_w"]) < 2 else 0.05)),
+                        info=chess.engine.INFO_SCORE,
+                        ponder=True,
+                    )
 
-                if len(__cache["best_b"]) < 3 and b_status == chess.STATUS_VALID:
-                    best_move_b = engine.play(b_board,
-                                              chess.engine.Limit(time=(0.1 if len(__cache["best_b"]) < 2 else 0.05)),
-                                              info=chess.engine.INFO_SCORE)
+                    if best_move_w.move is not None:
+                        cache["eval_w"] = best_move_w.info["score"]
+                        if best_move_w.move.uci() not in cache["best_w"]:
+                            cache["best_w"].update((best_move_w.move.uci(),))
+                            cache.changes.update(("best_w",))
+                    if best_move_w.ponder is not None:
+                        if best_move_w.ponder.uci() not in cache["exp_w"]:
+                            cache["exp_w"].update((best_move_w.ponder.uci(),))
+                            cache.changes.update(("exp_w",))
+
+                if len(cache["best_b"]) < 3 and b_status == chess.STATUS_VALID:
+                    best_move_b = engine.play(
+                        b_board,
+                        chess.engine.Limit(time=(0.1 if len(cache["best_b"]) < 2 else 0.05)),
+                        info=chess.engine.INFO_SCORE,
+                        ponder=True,
+                    )
+
                     if best_move_b.move is not None:
-                        __cache["eval_b"] = best_move_b.info["score"]
-                        if best_move_b.move.uci() not in __cache["best_b"]:
-                            __cache["best_b"].update((best_move_b.move.uci(),))
-                            __cache["changes"].update(("best_b",))
+                        cache["eval_b"] = best_move_b.info["score"]
+                        if best_move_b.move.uci() not in cache["best_b"]:
+                            cache["best_b"].update((best_move_b.move.uci(),))
+                            cache.changes.update(("best_b",))
+                    if best_move_b.ponder is not None:
+                        if best_move_b.ponder.uci() not in cache["exp_b"]:
+                            cache["exp_b"].update((best_move_b.ponder.uci(),))
+                            cache.changes.update(("exp_b",))
             except chess.engine.EngineTerminatedError:
                 print(f"Stockfish died, fen: {short_fen} board status: {w_status} {b_status}")
                 break
             print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Stockfish eval")
 
-            if __cache["svg"] is not None and "best_w" not in __cache["changes"] and "best_b" not in __cache["changes"]:
-                svg = __cache["svg"]
+            if cache["svg"] is not None and "best_w" not in cache.changes and "best_b" not in cache.changes:
+                svg = cache["svg"]
             else:
                 t_tmp = time.perf_counter()
-                ars = []
+                ars = ()
+                uci_moves = set()
+                exp_ars = ()
                 # check for more good moves
-                if __cache["best_w"] and "best_w" in __cache["changes"]:
-                    _ars = []
-                    for move in __cache["best_w"]:
+                if any((_ in cache.changes for _ in ("best_w", "exp_w", "ars_w"))):
+                    _ars = ()
+                    for move in cache["best_w"]:
                         move = chess.Move.from_uci(move)
-                        _ars.append(chess.svg.Arrow(move.from_square, move.to_square, color='green'))
-
-                    __cache["ars_w"] = _ars
-                    ars.extend(_ars)
-                else:
-                    ars.extend(__cache["ars_w"])
-
-                if __cache["best_b"] and "best_b" in __cache["changes"]:
-                    _ars = []
-                    for move in __cache["best_b"]:
+                        _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='green'),)
+                        uci_moves.add(move.uci())
+                    for move in cache["exp_w"]:
                         move = chess.Move.from_uci(move)
-                        _ars.append(chess.svg.Arrow(move.from_square, move.to_square, color='red'))
+                        if move.uci() not in uci_moves:
+                            exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#FF5A5A19'),)
 
-                    __cache["ars_b"] = _ars
-                    ars.extend(_ars)
-                else:
-                    ars.extend(__cache["ars_b"])
+                    cache["ars_w"] = _ars
+                    ars += _ars
+                elif cache["ars_w"] is not None:
+                    ars += cache["ars_w"]
+
+                if any((_ in cache.changes for _ in ("best_b", "exp_b", "ars_b"))):
+                    _ars = ()
+                    for move in cache["best_b"]:
+                        move = chess.Move.from_uci(move)
+                        _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='red'),)
+                        uci_moves.add(move.uci())
+                    for move in cache["exp_b"]:
+                        move = chess.Move.from_uci(move)
+                        if move.uci() not in uci_moves:
+                            exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#5AFF5A19'),)
+
+                    cache["ars_b"] = _ars
+                    ars += _ars
+                elif cache["ars_b"] is not None:
+                    ars += cache["ars_b"]
+
+                for exp in exp_ars:
+                    uci = chess.Move(exp.tail, exp.head).uci()
+                    if uci not in uci_moves:
+                        ars += (exp,)
+                        uci_moves.add(uci)
+
                 print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Arrows made")
 
                 # only change fills if there is a board change
                 t_tmp = time.perf_counter()
-                if "fills" in __cache["changes"]:
+                if "fills" in cache.changes:
                     fills = {}
                     if w_board.is_check():
                         # White King is in check
@@ -750,9 +955,9 @@ def stream():
                                 if not b_board.piece_at(attacker) is None:
                                     fills[attacker] = 'purple'
 
-                    __cache["fills"] = fills
+                    cache["fills"] = fills
                 else:
-                    fills = __cache["fills"]
+                    fills = cache["fills"]
                 print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fills made")
 
                 t_tmp = time.perf_counter()
@@ -782,39 +987,42 @@ def stream():
                 svg = np.array(pil_svg)
 
                 # update cache
-                __cache["svg"] = svg
+                cache["svg"] = svg
             cropped = svg
 
-        if __cache["best_w"] and best_move_w is None:
+        cache["cropped"] = cropped
+        # ---
+
+        # ---
+        # Update the GUI
+        if cache["best_w"] and best_move_w is None:
             best_move_w = chess.engine.PlayResult(
-                move=chess.Move.from_uci(list(__cache["best_w"])[0]),
+                move=chess.Move.from_uci(list(cache["best_w"])[0]),
                 ponder=None,
-                info={"score": __cache["eval_w"]},
+                info={"score": cache["eval_w"]},
             )
 
-        if __cache["best_b"] and best_move_b is None:
+        if cache["best_b"] and best_move_b is None:
             best_move_b = chess.engine.PlayResult(
-                move=chess.Move.from_uci(list(__cache["best_b"])[0]),
+                move=chess.Move.from_uci(list(cache["best_b"])[0]),
                 ponder=None,
-                info={"score": __cache["eval_b"]},
+                info={"score": cache["eval_b"]},
             )
 
         t_tmp = time.perf_counter()
-        gui.update_preview(
-            img=src, cropped=cropped,
-            certainty=certainty * 100,
-            best_move=(best_move_w, best_move_b),
-            fps=1 / (time.perf_counter() - t_start),
-        )
+        cache["fps"] = 1 / (time.perf_counter() - t_start)
+        cache["certainty"] = certainty * 100
+        cache["best_moves"] = best_move_w, best_move_b
         print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Final view update")
-        __cache["changes"].clear()
+        cache.clear_changes()
+        # ---
 
         t_end = time.perf_counter()
-
         print(f"{round(t_end - t_start, 3) * 1000}ms Prediction total ({round(1 / (t_end - t_start), 0)}fps)\n")
 
-    predictor.close()
     gui.callback()
+    predictor.close()
+    camera.stop()
 
 
 if __name__ == '__main__':

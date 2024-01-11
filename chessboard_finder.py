@@ -19,6 +19,7 @@ from time import time
 # sudo apt-get install libopenjp2-7 libtiff5
 import PIL.Image
 import cv2
+import matplotlib.pyplot as plt
 
 from helper_image_loading import *
 
@@ -52,6 +53,15 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
 
     # Get gradients, split into positive and inverted negative components
     gx, gy = np.gradient(img_arr_gray)
+
+    # # DEBUG -- show gradients
+    # plt.subplot(1, 2, 1)
+    # plt.imshow(gx, cmap='gray')
+    # plt.subplot(1, 2, 2)
+    # plt.imshow(gy, cmap='gray')
+    # plt.show()
+    # # /DEBUG
+
     gx_pos = gx.copy()
     gx_pos[gx_pos < 0] = 0
     gx_neg = -gx.copy()
@@ -63,9 +73,16 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     gy_neg[gy_neg < 0] = 0
 
     # 1-D amplitude of hough transform for gradients about X & Y axes
-    num_px = img_arr_gray.shape[0] * img_arr_gray.shape[1]
     hough_gx = gx_pos.sum(axis=1) * gx_neg.sum(axis=1)
     hough_gy = gy_pos.sum(axis=0) * gy_neg.sum(axis=0)
+
+    # # DEBUG -- show hough gradients
+    # plt.subplot(1, 2, 1)
+    # plt.plot(hough_gx)
+    # plt.subplot(1, 2, 2)
+    # plt.plot(hough_gy)
+    # plt.show()
+    # # /DEBUG
 
     # Check that gradient peak signal is strong enough by
     # comparing normalized standard deviation to a threshold
@@ -80,6 +97,14 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     # Arbitrary 20% threshold of max
     hough_gx[hough_gx < 0.2] = 0
     hough_gy[hough_gy < 0.2] = 0
+
+    # # DEBUG -- show hough gradients
+    # plt.subplot(1, 2, 1)
+    # plt.plot(hough_gx)
+    # plt.subplot(1, 2, 2)
+    # plt.plot(hough_gy)
+    # plt.show()
+    # # /DEBUG
 
     # Now we have a set of potential vertical and horizontal lines that
     # may contain some noisy readings, try different subsets of them with
