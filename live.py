@@ -42,6 +42,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from io import StringIO
 from itertools import repeat
 from typing import Union, Callable
@@ -57,6 +58,7 @@ import cv2
 import dxcam
 import numpy as np
 import pygetwindow
+import tensorflow as tf
 from customtkinter import (
     CTk,
     CTkLabel,
@@ -65,6 +67,8 @@ from customtkinter import (
     VERTICAL,
     CTkImage, CTkButton, CTkEntry, CTkFrame,
 )
+from tkinter import PhotoImage
+import tksvg
 from reportlab.graphics import renderPM
 from svglib.svglib import svg2rlg
 
@@ -74,7 +78,6 @@ from helper_functions import shortenFEN
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '1'  # Ignore Tensorflow INFO debug messages
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # Ignore floating point off by one error
-import tensorflow as tf
 
 # global vars
 cache = {}
@@ -148,6 +151,118 @@ def rotate_vertical(_img, max_rot=90):
     _img.rotate(rotation, expand=True).show()
 
     return rotation
+
+
+def auto_rotate(_img, crop=False) -> float:
+    """
+    Automatically rotates the image to be vertical.
+    :param _img: the grayscale numpy array of the image
+    :param crop: whether to crop the image to the detected rectangle
+    :return: the angle of rotation
+    """
+    _input_img = _img.copy()
+    if len(_input_img.shape) == 3:
+        _img = cv2.cvtColor(_img, cv2.COLOR_BGR2GRAY)
+    # find all the lines in the image
+    edges = cv2.Canny(_img, 50, 150, apertureSize=3)
+
+    # find the contours in the image
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # get the areas of the contours
+    areas = [cv2.contourArea(c) for c in contours]
+    areas = np.array(areas)
+    areas = np.sort(areas)
+
+    # exclude the contours that are too small
+    areas = areas[areas > 100]
+
+    # exclude areas larger than 0.9 * max_area
+    max_area = np.max(areas)
+    areas = areas[areas < 0.9 * max_area]
+
+    # use a box plot to exclude the outliers
+    q1 = np.percentile(areas, 25)
+    q3 = np.percentile(areas, 75)
+    iqr = q3 - q1
+    min_area = q1 - 1.5 * iqr
+    areas = areas[areas > min_area]
+
+    # draw the contours shaded with a random color
+    _output_img = _input_img.copy()
+    for c in contours:
+        if cv2.contourArea(c) not in areas:
+            continue
+        cv2.drawContours(_output_img, [c], -1, (255, 255, 255), -1)
+
+    # find new contours from our mask
+    if len(_output_img.shape) == 3:
+        _gray = cv2.cvtColor(_output_img, cv2.COLOR_BGR2GRAY)
+    else:
+        _gray = _output_img
+    _, mask = cv2.threshold(_gray, 240, 255, cv2.THRESH_BINARY)
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    # only use the largest contour
+    max_area = 0
+    max_contour = None
+    for c in contours:
+        if cv2.contourArea(c) > max_area:
+            max_area = cv2.contourArea(c)
+            max_contour = c
+
+    # draw the largest contour filled in
+    rot_rect = cv2.minAreaRect(max_contour)
+
+    new_angle = rot_rect[2]
+    if abs(new_angle) > 30:
+        print(f"Correcting angle from {new_angle}")
+        sign = np.sign(new_angle)
+        while (45 % new_angle) == 45:
+            new_angle = new_angle - 45
+
+        new_angle = 45 % new_angle * -sign
+
+    if new_angle != 0:
+        print(f"Rotating by {new_angle} degrees")
+
+    rot_rect = (rot_rect[0], (rot_rect[1][0], rot_rect[1][1]), new_angle)
+
+    if not crop:
+        return new_angle, _output_img
+
+    # crop tmp to the four points in the rotated rectangle
+    box = cv2.boxPoints(rot_rect)
+    box = np.intp(box)
+
+    box2 = np.zeros((4, 2), dtype="float32")
+    s = box.sum(axis=1)
+    box2[0] = box[np.argmin(s)]
+    box2[2] = box[np.argmax(s)]
+
+    diff = np.diff(box, axis=1)
+    box2[1] = box[np.argmin(diff)]
+    box2[3] = box[np.argmax(diff)]
+
+    mHeight = max(
+        int(np.sqrt((box2[2][0] - box2[0][0]) ** 2 + (box2[2][1] - box2[0][1]) ** 2)),
+        int(np.sqrt((box2[3][0] - box2[1][0]) ** 2 + (box2[3][1] - box2[1][1]) ** 2)),
+    )
+    mWidth = max(
+        int(np.sqrt((box2[1][0] - box2[0][0]) ** 2 + (box2[1][1] - box2[0][1]) ** 2)),
+        int(np.sqrt((box2[2][0] - box2[3][0]) ** 2 + (box2[2][1] - box2[3][1]) ** 2)),
+    )
+
+    dst = np.array([[0, 0], [mWidth - 1, 0], [mWidth - 1, mHeight - 1], [0, mHeight - 1]], np.float32)
+    M = cv2.getPerspectiveTransform(box2, dst)
+    tmp = cv2.warpPerspective(_input_img, M, (mWidth, mHeight))
+
+    # resize the image to a square
+    tmp = cv2.resize(tmp, (max(mWidth, mHeight), max(mWidth, mHeight)))
+    # cv2.imshow("tmp", tmp)
+    # cv2.waitKey(0)
+
+    return new_angle, tmp
 
 
 class ChessboardPredictor(object):
@@ -305,12 +420,12 @@ class GUI(threading.Thread):
         self.crop_size_slider = CTkSlider(
             self.root, from_=0, to=100,
             orientation=HORIZONTAL, number_of_steps=20)
-        self.crop_size_slider.set(100)
+        self.crop_size_slider.set(80)
         self.crop_size_slider.grid(row=2, column=1)
         self.rotation_slider = CTkSlider(
             self.root, from_=0, to=180,
-            orientation=HORIZONTAL, number_of_steps=38)
-        self.rotation_slider.set(100)
+            orientation=HORIZONTAL, number_of_steps=45)
+        self.rotation_slider.set(30)
         self.rotation_slider.grid(row=2, column=3)
 
         self.crop_x_slider = CTkSlider(
@@ -359,6 +474,8 @@ class GUI(threading.Thread):
                 self.crop_x_slider is None,
                 self.crop_y_slider is None,
         )):
+            print(f"Not active or missing sliders: Active: {self.is_active()}, img: {img is None}, img.shape: {len(img.shape) != 3}")
+            print(f"Sliders: crop_size: {self.crop_size_slider is None}, crop_x: {self.crop_x_slider is None}, crop_y: {self.crop_y_slider is None}")
             return img
 
         height, width, _ = img.shape
@@ -376,9 +493,16 @@ class GUI(threading.Thread):
         crop_x = int((width - crop_width) * (self.crop_x / 100 / 2 + 0.5) + crop_width / 2)
         crop_y = int((height - crop_height) * (-self.crop_y / 100 / 2 + 0.5) + crop_height / 2)
 
-        self.x_label.configure(text=f"X%: {self.crop_x}")
-        self.y_label.configure(text=f"Y%: {self.crop_y}")
-        self.size_label.configure(text=f"Size: {self.crop_size}%")
+        if not any((
+                self.x_label is None,
+                self.y_label is None,
+                self.size_label is None,
+        )):
+            self.x_label.configure(text=f"X%: {self.crop_x}")
+            self.y_label.configure(text=f"Y%: {self.crop_y}")
+            self.size_label.configure(text=f"Size: {self.crop_size}%")
+        else:
+            print(f"Labels: x: {type(self.x_label)}, y: {type(self.y_label)}, size: {type(self.size_label)}")
 
         # crop image
         left = crop_x - crop_width // 2
@@ -399,14 +523,19 @@ class GUI(threading.Thread):
             return img
 
         # rotate image
-        max_rotation = self.rotation_slider.get()  # 0<->180
+        max_rotation = self.rotation_slider.get()  # 0<->180 (-90<->90) degrees
 
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        angle = rotate_vertical(Image.fromarray(gray), max_rot=max_rotation)
-        img = Image.fromarray(img).rotate(angle, expand=True)
-        img = np.array(img)
+        try:
+            angle, out_img = auto_rotate(img, crop=True)
+            print(f"Rotating by {angle} degrees")
+        except Exception as e:
+            print(f"Exception in rotate: {e}")
+            return img
+        # angle = bind(angle, -max_rotation // 2, max_rotation // 2)
+        # img = Image.fromarray(img).rotate(angle, expand=True)
+        # img = np.array(img)
 
-        return img
+        return out_img
 
     def update(self):
         if not self.is_active():
@@ -414,14 +543,14 @@ class GUI(threading.Thread):
 
         try:
             self.update_preview()
-        except Exception as e:
-            print("Exception in update loop: %s" % e)
+        except Exception:
+            print("Exception in update loop: %s" % traceback.format_exc())
         finally:
             self.root.after(100, self.update)
 
     def update_preview(self):
         global cache
-        print("Updating preview")
+        # print("Updating preview")
 
         if not self.is_active() or cache is None:
             return
@@ -467,11 +596,13 @@ class GUI(threading.Thread):
                      f"W: {w_uci_move}, {w_eval}\n"
                      f"B: {b_uci_move}, {b_eval}")
 
-        if cropped is not None:
+        if cropped is not None and isinstance(cropped, np.ndarray):
             cropped = Image.fromarray(cropped)
             # resize to 200 a tall but preserve aspect ratio
             cropped = helper_image_loading.resizeAsNeeded(cropped, max_size=(200, 200), max_fail_size=(3000, 3000))
             self.preview_cropped.configure(image=CTkImage(cropped, size=cropped.size))
+        elif cropped is not None and isinstance(cropped, PhotoImage):
+            self.preview_cropped.configure(image=cropped)
 
         if img is not None:
             # resize to 200 a tall but preserve aspect ratio
@@ -692,6 +823,17 @@ def stream():
 
     time.sleep(1.0)
 
+    # Lets create the basic board with no pieces
+    board_svg_options = {
+        "size": 200,
+        "coordinates": False,
+    }
+    empty_board = chess.Board("8/8/8/8/8/8/8/8 w - - 0 1")
+    empty_svg = chess.svg.board(empty_board, **board_svg_options)
+    base_png = svg2rlg(StringIO(empty_svg))
+    base_png = renderPM.drawToPIL(base_png)
+    base_png = np.array(base_png)
+
     w_board = chess.Board()
     b_board = chess.Board()
     """
@@ -707,6 +849,8 @@ def stream():
     """
     default_cache = {
         "svg": None,
+        "base_svg": None,
+        "base_board": base_png,
         "img": None,
         "cropped": None,
 
@@ -737,16 +881,23 @@ def stream():
 
         # ---
         # Get the frame and do some preprocessing
-
         src = camera.get_latest_frame()
 
         # crop frame
-        frame = gui.crop(src)
+        if gui is not None:
+            frame = gui.crop(src)
+        else:
+            continue
 
-        if src != cache["img"]:
+        # check if the difference between the current frame and the last frame is significant
+        # (around 4 pixels changing from black to white)
+        if cache["img"] is None or np.sum(np.abs(cache["img"] - src)) > 1000:
             # rotate the frame
             frame = gui.rotate(frame)
-        cache["img"] = src
+            cache["img"] = frame
+        else:
+            frame = cache["img"]
+        print(f"{round(time.perf_counter() - t_start, 3) * 1000}ms Frame processed")
         # ---
 
         # ---
@@ -796,7 +947,7 @@ def stream():
                 "exp_w", "exp_b",
                 "ars_w", "ars_b",
                 "eval_w", "eval_b",
-                "svg",
+                "svg", "base_svg",
                 "fills",
             ))
         # ---
@@ -818,6 +969,24 @@ def stream():
                 print(b_board, b_status)
 
             print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial board checks")
+
+            # ---
+            # lets make the base board svg
+            if cache["base_svg"] is None:
+                t_tmp = time.perf_counter()
+                base_svg = chess.svg.board(
+                    w_board,
+                    colors={
+                        "square light": "#00000000",
+                        "square dark": "#00000000",
+                    },
+                    **board_svg_options
+                )
+                base_svg = svg2rlg(StringIO(base_svg))
+                base_svg = renderPM.drawToPIL(base_svg)
+                base_svg = np.array(base_svg)
+                cache["base_svg"] = base_svg
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Base SVG made")
 
             t_tmp = time.perf_counter()
             try:
@@ -961,12 +1130,16 @@ def stream():
                 print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fills made")
 
                 t_tmp = time.perf_counter()
+                # create a board with just the arrows and fills
                 svg = chess.svg.board(
-                    w_board,
+                    empty_board,
                     arrows=ars,
                     fill=fills,
-                    size=200,
-                    coordinates=False,
+                    colors={
+                        "square light": "#00000000",
+                        "square dark": "#00000000",
+                    },
+                    **board_svg_options
                 )
                 print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG generation")
 
@@ -981,10 +1154,13 @@ def stream():
                 t_tmp = time.perf_counter()
                 pil_svg = renderPM.drawToPIL(svg)
                 print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG rendered to PIL")
-
                 # ----
 
-                svg = np.array(pil_svg)
+                # combine the base board with the new svg
+                t_tmp = time.perf_counter()
+                svg = cache["base_board"].copy()
+                svg = svg + pil_svg + cache["base_svg"]
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG pasted to base board")
 
                 # update cache
                 cache["svg"] = svg

@@ -88,6 +88,8 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     # comparing normalized standard deviation to a threshold
     if min(hough_gx.std() / hough_gx.size,
            hough_gy.std() / hough_gy.size) < noise_threshold:
+        print(f"Gradient noise too high: {hough_gx.std() / hough_gx.size}, {hough_gy.std() / hough_gy.size}")
+
         return None
 
     # Normalize and skeletonize to just local peaks
@@ -119,6 +121,8 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     seqs_y = getAllSequences(pot_lines_y)
 
     if len(seqs_x) == 0 or len(seqs_y) == 0:
+        print(f"No sequences found: {len(seqs_x)}, {len(seqs_y)}")
+
         return None
 
     # Score sequences by the strength of their hough peaks
@@ -393,12 +397,17 @@ def findGrayscaleTilesInImage(img):
     if isinstance(img, PIL.Image.Image):
         img_arr = np.asarray(img.convert("L"), dtype=np.float32)
     elif isinstance(img, np.ndarray):
-        img_arr = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        if len(img.shape) == 3:
+            img_arr = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        elif len(img.shape) == 2:
+            img_arr = img
+        else:
+            raise ValueError("img must be 2D or 3D numpy.ndarray")
     else:
         raise TypeError("img must be PIL.Image.Image or numpy.ndarray")
 
     # Use computer vision to find orthorectified chessboard corners in image
-    corners = findChessboardCorners(img_arr)
+    corners = findChessboardCorners(img_arr, noise_threshold=5000)
     if corners is None or (corners[0], corners[1]) == (corners[2], corners[3]):
         return None, None
 
