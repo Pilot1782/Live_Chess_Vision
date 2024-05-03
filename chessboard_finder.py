@@ -214,7 +214,7 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
         if x_std < 1 and y_std < 1:
             return corners
 
-    # Build a kernel image of an idea chessboard to correlate against
+    # Build a kernel image of an ideal chessboard to correlate against
     k = 8  # Arbitrarily chose 8x8 pixel tiles for correlation image
     quad = np.ones([k, k])
     kernel = np.vstack([np.hstack([quad, -quad]), np.hstack([-quad, quad])])
@@ -227,7 +227,7 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     final_corners = None
     best_score = None
 
-    # Iterate over all possible combinations of sub sequences and keep the corners
+    # Iterate over all possible combinations of sub-sequences and keep the corners
     # with the best correlation response to the ideal 64x64px chessboard
     for i in range(len(sub_seqs_x)):
         for j in range(len(sub_seqs_y)):

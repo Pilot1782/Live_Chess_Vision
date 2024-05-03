@@ -43,8 +43,9 @@ import sys
 import threading
 import time
 import traceback
-from io import StringIO
 from itertools import repeat
+# import tkthread; tkthread.tkinstall(ensure_root=True)
+from tkinter import PhotoImage
 from typing import Union, Callable
 
 import PIL.Image
@@ -55,10 +56,12 @@ import chess
 import chess.engine
 import chess.svg
 import cv2
-import dxcam
+import mss
 import numpy as np
 import pygetwindow
 import tensorflow as tf
+
+import tksvg
 from customtkinter import (
     CTk,
     CTkLabel,
@@ -67,10 +70,6 @@ from customtkinter import (
     VERTICAL,
     CTkImage, CTkButton, CTkEntry, CTkFrame,
 )
-from tkinter import PhotoImage
-import tksvg
-from reportlab.graphics import renderPM
-from svglib.svglib import svg2rlg
 
 import chessboard_finder
 import helper_image_loading
@@ -460,6 +459,9 @@ class GUI(threading.Thread):
         # set the default window size
         self.root.geometry("600x300")
 
+        # load tksvg
+        tksvg.load(self.root)
+
         # start the update loop
         self.root.after(100, self.update)
 
@@ -474,8 +476,10 @@ class GUI(threading.Thread):
                 self.crop_x_slider is None,
                 self.crop_y_slider is None,
         )):
-            print(f"Not active or missing sliders: Active: {self.is_active()}, img: {img is None}, img.shape: {len(img.shape) != 3}")
-            print(f"Sliders: crop_size: {self.crop_size_slider is None}, crop_x: {self.crop_x_slider is None}, crop_y: {self.crop_y_slider is None}")
+            print(
+                f"Not active or missing sliders: Active: {self.is_active()}, img: {img is None}, img.shape: {img.shape}")
+            print(
+                f"Sliders: crop_size: {self.crop_size_slider is None}, crop_x: {self.crop_x_slider is None}, crop_y: {self.crop_y_slider is None}")
             return img
 
         height, width, _ = img.shape
@@ -550,7 +554,6 @@ class GUI(threading.Thread):
 
     def update_preview(self):
         global cache
-        # print("Updating preview")
 
         if not self.is_active() or cache is None:
             return
@@ -590,11 +593,15 @@ class GUI(threading.Thread):
             elif b_eval <= -999950:
                 b_eval = f"L{1000000 + b_eval}"
 
+            if b_eval[0] in "ML" or w_eval[0] in "ML":
+                self.status.configure(text_color="yellow")
+
             self.status.configure(
                 text=f"{f'FPS: {round(fps, 0)}, ' if fps is not None else ''}"
                      "Best moves:\n"
                      f"W: {w_uci_move}, {w_eval}\n"
-                     f"B: {b_uci_move}, {b_eval}")
+                     f"B: {b_uci_move}, {b_eval}"
+            )
 
         if cropped is not None and isinstance(cropped, np.ndarray):
             cropped = Image.fromarray(cropped)
@@ -603,6 +610,8 @@ class GUI(threading.Thread):
             self.preview_cropped.configure(image=CTkImage(cropped, size=cropped.size))
         elif cropped is not None and isinstance(cropped, PhotoImage):
             self.preview_cropped.configure(image=cropped)
+        elif cropped is not None and isinstance(cropped, str):
+            self.render_svg(cropped)
 
         if img is not None:
             # resize to 200 a tall but preserve aspect ratio
@@ -632,6 +641,23 @@ class GUI(threading.Thread):
         # update window title
         if certainty is not None:
             self.root.title("Chessboard Predictor - Certainty: %.1f%%" % certainty)
+
+    def render_svg(self, img: str):
+        if not self.is_active():
+            return
+
+        try:
+            print("Rendering SVG")
+
+            img2 = tksvg.SvgImage(data=img, width=200, height=200, name="svg")
+
+            # update preview
+            self.preview_cropped.configure(image=img2)
+
+            # keep reference to prevent garbage collection
+            self.preview_cropped.image = img2
+        except Exception:
+            print(f"Exception in render_svg: {traceback.format_exc()}")
 
 
 class FloatSpinbox(CTkFrame):
@@ -804,401 +830,361 @@ def stream():
 
     # get the window region
     rect = video_game_window._getWindowRect()
-    region = (rect.left, rect.top, rect.right, rect.bottom)
-
-    camera = dxcam.create(device_idx=0, region=region, output_color="RGB")
-    if camera is None:
-        print("""DXCamera failed to initialize. Some common causes are:
-            1. You are on a laptop with both an integrated GPU and discrete GPU.
-               Go into Windows Graphic Settings,select python.exe and set it to Power Saving Mode.
-               If that doesn't work, then read this:
-               https://github.com/SerpentAI/D3DShot/wiki/Installation-Note:-Laptops
-            2. The game is an exclusive full screen game. Set it to windowed mode.""")
-        return
-
-    # Initialize predictor, takes a while, but only needed once
-    predictor = ChessboardPredictor()
-    engine = chess.engine.SimpleEngine.popen_uci("stockfish/stockfish-windows-x86-64-avx2.exe")
-    camera.start(target_fps=10, video_mode=True)
-
-    time.sleep(1.0)
-
-    # Lets create the basic board with no pieces
-    board_svg_options = {
-        "size": 200,
-        "coordinates": False,
+    region = {
+        "top": rect.top,
+        "left": rect.left,
+        "width": rect.right - rect.left,
+        "height": rect.bottom - rect.top,
     }
-    empty_board = chess.Board("8/8/8/8/8/8/8/8 w - - 0 1")
-    empty_svg = chess.svg.board(empty_board, **board_svg_options)
-    base_png = svg2rlg(StringIO(empty_svg))
-    base_png = renderPM.drawToPIL(base_png)
-    base_png = np.array(base_png)
 
-    w_board = chess.Board()
-    b_board = chess.Board()
-    """
-    cache = {
-        "svg": PIL object of the svg
-        "changes": set of changes to the svg
-        
-        "best_w": set of best moves for white as uci strings
-        "best_b": set of best moves for black as uci strings
-        "fills": set of fills for the svg
-        "ars_w": set of arrows for white
-        "ars_b": set of arrows for black
-    """
-    default_cache = {
-        "svg": None,
-        "base_svg": None,
-        "base_board": base_png,
-        "img": None,
-        "cropped": None,
+    with mss.mss() as camera:
+        if camera is None:
+            print("""DXCamera failed to initialize. Some common causes are:
+                1. You are on a laptop with both an integrated GPU and discrete GPU.
+                   Go into Windows Graphic Settings,select python.exe and set it to Power Saving Mode.
+                   If that doesn't work, then read this:
+                   https://github.com/SerpentAI/D3DShot/wiki/Installation-Note:-Laptops
+                2. The game is an exclusive full screen game. Set it to windowed mode.""")
+            return
 
-        "fen": None,
-        "best_w": set(),
-        "best_b": set(),
-        "exp_w": set(),
-        "exp_b": set(),
-        "best_moves": (None, None),
-        "eval_w": None,
-        "eval_b": None,
-        "fills": set(),
-        "ars_w": None,
-        "ars_b": None,
+        # Initialize predictor, takes a while, but only needed once
+        predictor = ChessboardPredictor()
+        engine = chess.engine.SimpleEngine.popen_uci("stockfish/stockfish-windows-x86-64-avx2.exe")
 
-        "fps": None,
-        "certainty": None,
-    }
-    global cache
-    cache = Cache(default_cache)
+        time.sleep(1.0)
 
-    gui = GUI()
+        w_board = chess.Board()
+        b_board = chess.Board()
+        default_cache = {
+            "svg": None,
+            "img": None,
+            "cropped": None,
 
-    while gui.is_active():
-        t_start = time.perf_counter()
-        if not gui.is_active():
-            break
+            "fen": None,
 
-        # ---
-        # Get the frame and do some preprocessing
-        src = camera.get_latest_frame()
+            "best_w": set(),
+            "best_b": set(),
 
-        # crop frame
-        if gui is not None:
-            frame = gui.crop(src)
-        else:
-            continue
+            "exp_w": set(),
+            "exp_b": set(),
 
-        # check if the difference between the current frame and the last frame is significant
-        # (around 4 pixels changing from black to white)
-        if cache["img"] is None or np.sum(np.abs(cache["img"] - src)) > 1000:
-            # rotate the frame
-            frame = gui.rotate(frame)
-            cache["img"] = frame
-        else:
-            frame = cache["img"]
-        print(f"{round(time.perf_counter() - t_start, 3) * 1000}ms Frame processed")
-        # ---
+            "best_moves": (None, None),
 
-        # ---
-        # Find the corners and tiles of the chessboard
-        # Look for chessboard in image, get corners and split chessboard into tiles
-        t_tmp = time.perf_counter()
-        try:
-            tiles, corners = chessboard_finder.findGrayscaleTilesInImage(frame)
-        except ValueError:
-            print("Couldn't parse chessboard")
-            continue
+            "eval_w": None,
+            "eval_b": None,
 
-        # skip on failure to find chessboard in image
-        if tiles is None or len(tiles) == 0:
-            print("Couldn't find chessboard in image")
+            "fills": set(),
 
-            cache["cropped"] = frame
-            continue
+            "ars_w": None,
+            "ars_b": None,
 
-        tl = (corners[0], corners[1])
-        br = (corners[2], corners[3])
-        cropped = frame[tl[1]:br[1], tl[0]:br[0]]
-        # ---
+            "fps": None,
+            "certainty": None,
+        }
+        global cache
+        cache = Cache(default_cache)
 
-        # ---
-        # Make prediction on input tiles to find pieces
-        fen, tile_certainties = predictor.get_prediction(tiles)
-        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fen made")
-        short_fen: str = shortenFEN(fen)
+        gui = GUI()
 
-        # Use the worst case certainty as our final uncertainty score
-        certainty = tile_certainties.min()
-
-        # Has the board changed?
-        if short_fen != cache["fen"]:
-            # the board has changed
-            w_fen = short_fen + " w - - 0 1"
-            b_fen = short_fen + " b - - 0 1"
-
-            w_board = chess.Board(w_fen)
-            b_board = chess.Board(b_fen)
-
-            # change the cache
-            cache["fen"] = short_fen
-            cache.clear((
-                "best_w", "best_b",
-                "exp_w", "exp_b",
-                "ars_w", "ars_b",
-                "eval_w", "eval_b",
-                "svg", "base_svg",
-                "fills",
-            ))
-        # ---
-
-        # ---
-        # Update the SVG and find the best move for black and white
-        best_move_w = None
-        best_move_b = None
-        if any((w_board.is_game_over(), w_board.is_checkmate(), w_board.is_stalemate())):
-            print("Game over")
-        else:
-            t_tmp = time.perf_counter()
-            w_status = w_board.status()
-            b_status = b_board.status()
-
-            if not any((w_status == chess.STATUS_VALID, b_status == chess.STATUS_VALID)):
-                print("Boards are invalid")
-                print(w_board, w_status)
-                print(b_board, b_status)
-
-            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial board checks")
+        while gui.is_active():
+            t_start = time.perf_counter()
+            if not gui.is_active():
+                break
 
             # ---
-            # lets make the base board svg
-            if cache["base_svg"] is None:
-                t_tmp = time.perf_counter()
-                base_svg = chess.svg.board(
-                    w_board,
-                    colors={
-                        "square light": "#00000000",
-                        "square dark": "#00000000",
-                    },
-                    **board_svg_options
-                )
-                base_svg = svg2rlg(StringIO(base_svg))
-                base_svg = renderPM.drawToPIL(base_svg)
-                base_svg = np.array(base_svg)
-                cache["base_svg"] = base_svg
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Base SVG made")
+            # Get the frame and do some preprocessing
+            src = np.array(camera.grab(region))
 
+            # remove the alpha channel
+            src = src[:, :, :3]
+            # reverse the order of the channels
+            src = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
+
+            if src is None:
+                print("Failed to grab frame")
+                continue
+
+            # crop frame
+            if gui is not None:
+                frame = gui.crop(src)
+            else:
+                continue
+
+            # check if the difference between the current frame and the last frame is significant
+            # (around 4 pixels changing from black to white)
+            if cache["img"] is None or src.shape != cache["img"].shape or np.sum(np.abs(cache["img"] - src)) > 1000:
+                # rotate the frame
+                frame = gui.rotate(frame)
+                cache["img"] = src
+            print(f"{round(time.perf_counter() - t_start, 3) * 1000}ms Frame processed")
+            # ---
+
+            # ---
+            # Find the corners and tiles of the chessboard
+            # Look for chessboard in image, get corners and split chessboard into tiles
             t_tmp = time.perf_counter()
             try:
-                if len(cache["best_w"]) < 3 and w_status == chess.STATUS_VALID:
-                    best_move_w = engine.play(
-                        w_board,
-                        chess.engine.Limit(time=(0.1 if len(cache["best_w"]) < 2 else 0.05)),
-                        info=chess.engine.INFO_SCORE,
-                        ponder=True,
-                    )
+                tiles, corners = chessboard_finder.findGrayscaleTilesInImage(frame)
+            except ValueError:
+                print("Couldn't parse chessboard")
+                continue
 
-                    if best_move_w.move is not None:
-                        cache["eval_w"] = best_move_w.info["score"]
-                        if best_move_w.move.uci() not in cache["best_w"]:
-                            cache["best_w"].update((best_move_w.move.uci(),))
-                            cache.changes.update(("best_w",))
-                    if best_move_w.ponder is not None:
-                        if best_move_w.ponder.uci() not in cache["exp_w"]:
-                            cache["exp_w"].update((best_move_w.ponder.uci(),))
-                            cache.changes.update(("exp_w",))
+            # skip on failure to find chessboard in image
+            if tiles is None or len(tiles) == 0:
+                print("Couldn't find chessboard in image, updating window rect")
 
-                if len(cache["best_b"]) < 3 and b_status == chess.STATUS_VALID:
-                    best_move_b = engine.play(
-                        b_board,
-                        chess.engine.Limit(time=(0.1 if len(cache["best_b"]) < 2 else 0.05)),
-                        info=chess.engine.INFO_SCORE,
-                        ponder=True,
-                    )
+                rect = video_game_window._getWindowRect()
+                region = {
+                    "top": rect.top,
+                    "left": rect.left,
+                    "width": rect.right - rect.left,
+                    "height": rect.bottom - rect.top,
+                }
 
-                    if best_move_b.move is not None:
-                        cache["eval_b"] = best_move_b.info["score"]
-                        if best_move_b.move.uci() not in cache["best_b"]:
-                            cache["best_b"].update((best_move_b.move.uci(),))
-                            cache.changes.update(("best_b",))
-                    if best_move_b.ponder is not None:
-                        if best_move_b.ponder.uci() not in cache["exp_b"]:
-                            cache["exp_b"].update((best_move_b.ponder.uci(),))
-                            cache.changes.update(("exp_b",))
-            except chess.engine.EngineTerminatedError:
-                print(f"Stockfish died, fen: {short_fen} board status: {w_status} {b_status}")
-                break
-            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Stockfish eval")
+                cache["cropped"] = frame
+                continue
 
-            if cache["svg"] is not None and "best_w" not in cache.changes and "best_b" not in cache.changes:
-                svg = cache["svg"]
+            tl = (corners[0], corners[1])
+            br = (corners[2], corners[3])
+            cropped = frame[tl[1]:br[1], tl[0]:br[0]]
+            # ---
+
+            # ---
+            # Make prediction on input tiles to find pieces
+            fen, tile_certainties = predictor.get_prediction(tiles)
+            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fen made")
+            short_fen: str = shortenFEN(fen)
+
+            # Use the worst case certainty as our final uncertainty score
+            certainty = tile_certainties.min()
+
+            # Has the board changed?
+            if short_fen != cache["fen"]:
+                # the board has changed
+                w_fen = short_fen + " w - - 0 1"
+                b_fen = short_fen + " b - - 0 1"
+
+                w_board = chess.Board(w_fen)
+                b_board = chess.Board(b_fen)
+
+                # change the cache
+                cache["fen"] = short_fen
+                cache.clear((
+                    "best_w", "best_b",
+                    "exp_w", "exp_b",
+                    "ars_w", "ars_b",
+                    "eval_w", "eval_b",
+                    "svg", "fills",
+                ))
+            # ---
+
+            # ---
+            # Update the SVG and find the best move for black and white
+            best_move_w = None
+            best_move_b = None
+            if any((w_board.is_game_over(), w_board.is_checkmate(), w_board.is_stalemate())):
+                print("Game over")
             else:
+                # The board has changed
+
                 t_tmp = time.perf_counter()
-                ars = ()
-                uci_moves = set()
-                exp_ars = ()
-                # check for more good moves
-                if any((_ in cache.changes for _ in ("best_w", "exp_w", "ars_w"))):
-                    _ars = ()
-                    for move in cache["best_w"]:
-                        move = chess.Move.from_uci(move)
-                        _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='green'),)
-                        uci_moves.add(move.uci())
-                    for move in cache["exp_w"]:
-                        move = chess.Move.from_uci(move)
-                        if move.uci() not in uci_moves:
-                            exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#FF5A5A19'),)
+                w_status = w_board.status()
+                b_status = b_board.status()
 
-                    cache["ars_w"] = _ars
-                    ars += _ars
-                elif cache["ars_w"] is not None:
-                    ars += cache["ars_w"]
+                if not any((w_status == chess.STATUS_VALID, b_status == chess.STATUS_VALID)):
+                    print("Boards are invalid")
+                    print(w_board, w_status)
+                    print(b_board, b_status)
 
-                if any((_ in cache.changes for _ in ("best_b", "exp_b", "ars_b"))):
-                    _ars = ()
-                    for move in cache["best_b"]:
-                        move = chess.Move.from_uci(move)
-                        _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='red'),)
-                        uci_moves.add(move.uci())
-                    for move in cache["exp_b"]:
-                        move = chess.Move.from_uci(move)
-                        if move.uci() not in uci_moves:
-                            exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#5AFF5A19'),)
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Initial board checks")
 
-                    cache["ars_b"] = _ars
-                    ars += _ars
-                elif cache["ars_b"] is not None:
-                    ars += cache["ars_b"]
-
-                for exp in exp_ars:
-                    uci = chess.Move(exp.tail, exp.head).uci()
-                    if uci not in uci_moves:
-                        ars += (exp,)
-                        uci_moves.add(uci)
-
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Arrows made")
-
-                # only change fills if there is a board change
                 t_tmp = time.perf_counter()
-                if "fills" in cache.changes:
-                    fills = {}
-                    if w_board.is_check():
-                        # White King is in check
+                try:
+                    if len(cache["best_w"]) < 3 and w_status == chess.STATUS_VALID:
+                        best_move_w = engine.play(
+                            w_board,
+                            chess.engine.Limit(time=(0.1 if len(cache["best_w"]) < 2 else 0.05)),
+                            info=chess.engine.INFO_SCORE,
+                            ponder=True,
+                        )
 
-                        fills[w_board.king(chess.WHITE)] = 'pink'
-                        # get the attacker
-                        attackers = w_board.attackers(chess.BLACK, w_board.king(chess.WHITE))
-                        for att in attackers:
-                            fills[att] = 'red'
+                        if best_move_w.move is not None:
+                            cache["eval_w"] = best_move_w.info["score"]
+                            if best_move_w.move.uci() not in cache["best_w"]:
+                                cache["best_w"].update((best_move_w.move.uci(),))
+                                cache.changes.update(("best_w",))
+                        if best_move_w.ponder is not None:
+                            if best_move_w.ponder.uci() not in cache["exp_w"]:
+                                cache["exp_w"].update((best_move_w.ponder.uci(),))
+                                cache.changes.update(("exp_w",))
 
-                            attacks = w_board.attacks(att)  # att -> attacked square
-                            attackers = w_board.attackers(chess.WHITE, att)  # square -> att
-                            for attack in attacks:
-                                if not w_board.piece_at(attack) is None \
-                                        and w_board.piece_at(attack).color == chess.WHITE \
-                                        and w_board.piece_at(attack).piece_type != chess.KING:
-                                    fills[attack] = 'yellow'
+                    if len(cache["best_b"]) < 3 and b_status == chess.STATUS_VALID:
+                        best_move_b = engine.play(
+                            b_board,
+                            chess.engine.Limit(time=(0.1 if len(cache["best_b"]) < 2 else 0.05)),
+                            info=chess.engine.INFO_SCORE,
+                            ponder=True,
+                        )
 
-                            for attacker in attackers:
-                                if not w_board.piece_at(attacker) is None:
-                                    fills[attacker] = 'purple'
+                        if best_move_b.move is not None:
+                            cache["eval_b"] = best_move_b.info["score"]
+                            if best_move_b.move.uci() not in cache["best_b"]:
+                                cache["best_b"].update((best_move_b.move.uci(),))
+                                cache.changes.update(("best_b",))
+                        if best_move_b.ponder is not None:
+                            if best_move_b.ponder.uci() not in cache["exp_b"]:
+                                cache["exp_b"].update((best_move_b.ponder.uci(),))
+                                cache.changes.update(("exp_b",))
+                except chess.engine.EngineTerminatedError:
+                    print(f"Stockfish died, fen: {short_fen} board status: {w_status} {b_status}")
+                    break
+                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Stockfish eval")
 
-                    if b_board.is_check():
-                        # Black King is in check
-
-                        fills[b_board.king(chess.BLACK)] = 'pink'
-                        # get the attacker
-                        attackers = b_board.attackers(chess.WHITE, b_board.king(chess.BLACK))
-                        for att in attackers:
-                            fills[att] = 'green'
-
-                            attacks = b_board.attacks(att)  # att -> attacked square
-                            attackers = b_board.attackers(chess.BLACK, att)  # square -> att
-                            for attack in attacks:
-                                if not b_board.piece_at(attack) is None \
-                                        and b_board.piece_at(attack).color == chess.BLACK \
-                                        and b_board.piece_at(attack).piece_type != chess.KING:
-                                    fills[attack] = 'yellow'
-
-                            for attacker in attackers:
-                                if not b_board.piece_at(attacker) is None:
-                                    fills[attacker] = 'purple'
-
-                    cache["fills"] = fills
+                if cache["svg"] is not None and "best_w" not in cache.changes and "best_b" not in cache.changes:
+                    svg = cache["svg"]
                 else:
-                    fills = cache["fills"]
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fills made")
+                    # update the SVG
 
-                t_tmp = time.perf_counter()
-                # create a board with just the arrows and fills
-                svg = chess.svg.board(
-                    empty_board,
-                    arrows=ars,
-                    fill=fills,
-                    colors={
-                        "square light": "#00000000",
-                        "square dark": "#00000000",
-                    },
-                    **board_svg_options
+                    t_tmp = time.perf_counter()
+                    ars = ()
+                    uci_moves = set()
+                    exp_ars = ()
+                    # check for more good moves
+                    if any((_ in cache.changes for _ in ("best_w", "exp_w", "ars_w"))):
+                        _ars = ()
+                        for move in cache["best_w"]:
+                            move = chess.Move.from_uci(move)
+                            _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='green'),)
+                            uci_moves.add(move.uci())
+                        for move in cache["exp_w"]:
+                            move = chess.Move.from_uci(move)
+                            if move.uci() not in uci_moves:
+                                exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#FF5A5A19'),)
+
+                        cache["ars_w"] = _ars
+                        ars += _ars
+                    elif cache["ars_w"] is not None:
+                        ars += cache["ars_w"]
+
+                    if any((_ in cache.changes for _ in ("best_b", "exp_b", "ars_b"))):
+                        _ars = ()
+                        for move in cache["best_b"]:
+                            move = chess.Move.from_uci(move)
+                            _ars += (chess.svg.Arrow(move.from_square, move.to_square, color='red'),)
+                            uci_moves.add(move.uci())
+                        for move in cache["exp_b"]:
+                            move = chess.Move.from_uci(move)
+                            if move.uci() not in uci_moves:
+                                exp_ars += (chess.svg.Arrow(move.from_square, move.to_square, color='#5AFF5A19'),)
+
+                        cache["ars_b"] = _ars
+                        ars += _ars
+                    elif cache["ars_b"] is not None:
+                        ars += cache["ars_b"]
+
+                    for exp in exp_ars:
+                        uci = chess.Move(exp.tail, exp.head).uci()
+                        if uci not in uci_moves:
+                            ars += (exp,)
+                            uci_moves.add(uci)
+
+                    print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Arrows made")
+
+                    # only change fills if there is a board change
+                    t_tmp = time.perf_counter()
+                    if "fills" in cache.changes:
+                        fills = {}
+                        if w_board.is_check():
+                            # White King is in check
+
+                            fills[w_board.king(chess.WHITE)] = 'pink'
+                            # get the attacker
+                            attackers = w_board.attackers(chess.BLACK, w_board.king(chess.WHITE))
+                            for att in attackers:
+                                fills[att] = 'red'
+
+                                attacks = w_board.attacks(att)  # att -> attacked square
+                                attackers = w_board.attackers(chess.WHITE, att)  # square -> att
+                                for attack in attacks:
+                                    if not w_board.piece_at(attack) is None \
+                                            and w_board.piece_at(attack).color == chess.WHITE \
+                                            and w_board.piece_at(attack).piece_type != chess.KING:
+                                        fills[attack] = 'yellow'
+
+                                for attacker in attackers:
+                                    if not w_board.piece_at(attacker) is None:
+                                        fills[attacker] = 'purple'
+
+                        if b_board.is_check():
+                            # Black King is in check
+
+                            fills[b_board.king(chess.BLACK)] = 'pink'
+                            # get the attacker
+                            attackers = b_board.attackers(chess.WHITE, b_board.king(chess.BLACK))
+                            for att in attackers:
+                                fills[att] = 'green'
+
+                                attacks = b_board.attacks(att)  # att -> attacked square
+                                attackers = b_board.attackers(chess.BLACK, att)  # square -> att
+                                for attack in attacks:
+                                    if not b_board.piece_at(attack) is None \
+                                            and b_board.piece_at(attack).color == chess.BLACK \
+                                            and b_board.piece_at(attack).piece_type != chess.KING:
+                                        fills[attack] = 'yellow'
+
+                                for attacker in attackers:
+                                    if not b_board.piece_at(attacker) is None:
+                                        fills[attacker] = 'purple'
+
+                        cache["fills"] = fills
+                    else:
+                        fills = cache["fills"]
+                    print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Fills made")
+
+                    t_tmp = time.perf_counter()
+                    # create a board with just the arrows and fills
+                    svg = chess.svg.board(
+                        w_board,
+                        arrows=ars,
+                        fill=fills,
+                        size=200,
+                        coordinates=False,
+                    )
+                    print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG generation")
+                cropped = svg
+
+            cache["cropped"] = cropped
+            # ---
+
+            # ---
+            # Update the GUI
+            if cache["best_w"] and best_move_w is None:
+                best_move_w = chess.engine.PlayResult(
+                    move=chess.Move.from_uci(list(cache["best_w"])[0]),
+                    ponder=None,
+                    info={"score": cache["eval_w"]},
                 )
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG generation")
 
-                # ----
-                # This is the slowest section of the code,
-                # so we should avoid it if possible
+            if cache["best_b"] and best_move_b is None:
+                best_move_b = chess.engine.PlayResult(
+                    move=chess.Move.from_uci(list(cache["best_b"])[0]),
+                    ponder=None,
+                    info={"score": cache["eval_b"]},
+                )
 
-                t_tmp = time.perf_counter()
-                svg = svg2rlg(StringIO(svg))
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG to ReportLab")
+            t_tmp = time.perf_counter()
+            cache["fps"] = 1 / (time.perf_counter() - t_start)
+            cache["certainty"] = certainty * 100
+            cache["best_moves"] = best_move_w, best_move_b
+            print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Final view update")
+            cache.clear_changes()
+            # ---
 
-                t_tmp = time.perf_counter()
-                pil_svg = renderPM.drawToPIL(svg)
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG rendered to PIL")
-                # ----
-
-                # combine the base board with the new svg
-                t_tmp = time.perf_counter()
-                svg = cache["base_board"].copy()
-                svg = svg + pil_svg + cache["base_svg"]
-                print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms SVG pasted to base board")
-
-                # update cache
-                cache["svg"] = svg
-            cropped = svg
-
-        cache["cropped"] = cropped
-        # ---
-
-        # ---
-        # Update the GUI
-        if cache["best_w"] and best_move_w is None:
-            best_move_w = chess.engine.PlayResult(
-                move=chess.Move.from_uci(list(cache["best_w"])[0]),
-                ponder=None,
-                info={"score": cache["eval_w"]},
-            )
-
-        if cache["best_b"] and best_move_b is None:
-            best_move_b = chess.engine.PlayResult(
-                move=chess.Move.from_uci(list(cache["best_b"])[0]),
-                ponder=None,
-                info={"score": cache["eval_b"]},
-            )
-
-        t_tmp = time.perf_counter()
-        cache["fps"] = 1 / (time.perf_counter() - t_start)
-        cache["certainty"] = certainty * 100
-        cache["best_moves"] = best_move_w, best_move_b
-        print(f"{round(time.perf_counter() - t_tmp, 3) * 1000}ms Final view update")
-        cache.clear_changes()
-        # ---
-
-        t_end = time.perf_counter()
-        print(f"{round(t_end - t_start, 3) * 1000}ms Prediction total ({round(1 / (t_end - t_start), 0)}fps)\n")
+            t_end = time.perf_counter()
+            print(f"{round(t_end - t_start, 3) * 1000}ms Prediction total ({round(1 / (t_end - t_start), 0)}fps)\n")
 
     gui.callback()
     predictor.close()
-    camera.stop()
 
 
 if __name__ == '__main__':
