@@ -44,7 +44,6 @@ import threading
 import time
 import traceback
 from itertools import repeat
-# import tkthread; tkthread.tkinstall(ensure_root=True)
 from tkinter import PhotoImage
 from typing import Union, Callable
 
@@ -70,6 +69,7 @@ from customtkinter import (
     VERTICAL,
     CTkImage, CTkButton, CTkEntry, CTkFrame,
 )
+from numba import jit
 
 import chessboard_finder
 import helper_image_loading
@@ -152,6 +152,7 @@ def rotate_vertical(_img, max_rot=90):
     return rotation
 
 
+@jit
 def auto_rotate(_img, crop=False) -> float:
     """
     Automatically rotates the image to be vertical.
@@ -613,7 +614,7 @@ class GUI(threading.Thread):
         elif cropped is not None and isinstance(cropped, str):
             self.render_svg(cropped)
 
-        if img is not None:
+        if img is not None and self.crop_size is not None:
             # resize to 200 a tall but preserve aspect ratio
             img = Image.fromarray(img)
             width, height = img.size
@@ -778,10 +779,14 @@ def stream():
     # Selecting the correct game window
     try:
         video_game_windows = pygetwindow.getAllWindows()
-        titles = [window.title for window in video_game_windows]
+        titles = [window.title.lower() for window in video_game_windows]
 
-        if "VRChat" in titles:
-            video_game_window = pygetwindow.getWindowsWithTitle("VRChat")[0]
+        triggers = ["vrchat", "chess.com"]
+
+        if any([trigger.lower() in title.lower() for trigger in triggers for title in titles]):
+            # video_game_window = pygetwindow.getWindowsWithTitle("VRChat" if "VRChat" in titles else "Chess.com")[0]
+            video_game_window = pygetwindow.getWindowsWithTitle("VRChat")[0] if "VRChat" in titles else \
+                pygetwindow.getWindowsWithTitle("Chess.com")[0]
         else:
             print("=== All Windows ===")
             for index, window in enumerate(video_game_windows):

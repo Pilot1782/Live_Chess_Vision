@@ -20,11 +20,14 @@ from time import time
 import PIL.Image
 import cv2
 import matplotlib.pyplot as plt
+from numba import jit, njit
+from numpy import ndarray
 
 from helper_image_loading import *
 
 
-def nonmax_suppress_1d(arr, winsize=5):
+@jit(nopython=True)
+def nonmax_suppress_1d(arr: ndarray, winsize=5) -> ndarray:
     """Return 1d array with only peaks, use neighborhood window of winsize px"""
     _arr = arr.copy()
 
@@ -43,7 +46,23 @@ def nonmax_suppress_1d(arr, winsize=5):
     return _arr
 
 
-def findChessboardCorners(img_arr_gray, noise_threshold=8000):
+@njit
+def gradient_2d(image):
+    gradient_x = np.zeros_like(image)
+    gradient_y = np.zeros_like(image)
+
+    width, height = image.shape
+
+    for i in range(1, width-1):
+        for j in range(1, height-1):
+            gradient_x[i, j] = image[i+1, j] - image[i-1, j]
+            gradient_y[i, j] = image[i, j+1] - image[i, j-1]
+
+    return gradient_x, gradient_y
+
+
+@jit(nopython=False)
+def findChessboardCorners(img_arr_gray: ndarray, noise_threshold=8000):
     # Load image grayscale as a numpy array
     # Return None on failure to find a chessboard
     #
@@ -52,7 +71,7 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     # at < 5,000 and good chessboards values at > 10,000
 
     # Get gradients, split into positive and inverted negative components
-    gx, gy = np.gradient(img_arr_gray)
+    gx, gy = gradient_2d(img_arr_gray)
 
     # # DEBUG -- show gradients
     # plt.subplot(1, 2, 1)
@@ -252,7 +271,8 @@ def findChessboardCorners(img_arr_gray, noise_threshold=8000):
     return final_corners
 
 
-def getAllSequences(seq, min_seq_len=7, err_px=5):
+@jit(nopython=True)
+def getAllSequences(seq, min_seq_len=7, err_px=5) -> list[ndarray]:
     """Given sequence of increasing numbers, get all sequences with common
     spacing (within err_px) that contain at least min_seq_len values"""
 
