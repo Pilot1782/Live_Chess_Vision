@@ -15,18 +15,13 @@
 import argparse
 from time import time
 
-# sudo apt-get install libatlas-base-dev for numpy error, see https://github.com/Kitt-AI/snowboy/issues/262
-# sudo apt-get install libopenjp2-7 libtiff5
 import PIL.Image
 import cv2
-import matplotlib.pyplot as plt
-from numba import jit, njit
 from numpy import ndarray
 
 from helper_image_loading import *
 
 
-@jit(nopython=True)
 def nonmax_suppress_1d(arr: ndarray, winsize=5) -> ndarray:
     """Return 1d array with only peaks, use neighborhood window of winsize px"""
     _arr = arr.copy()
@@ -46,7 +41,6 @@ def nonmax_suppress_1d(arr: ndarray, winsize=5) -> ndarray:
     return _arr
 
 
-@njit
 def gradient_2d(image):
     gradient_x = np.zeros_like(image)
     gradient_y = np.zeros_like(image)
@@ -61,7 +55,6 @@ def gradient_2d(image):
     return gradient_x, gradient_y
 
 
-@jit(nopython=False)
 def findChessboardCorners(img_arr_gray: ndarray, noise_threshold=8000):
     # Load image grayscale as a numpy array
     # Return None on failure to find a chessboard
@@ -223,10 +216,10 @@ def findChessboardCorners(img_arr_gray: ndarray, noise_threshold=8000):
     # then we can just use them as our final output
     if len(best_seq_x) == 7 and len(best_seq_y) == 7:
         # find the step sizes
-        dx = np.diff(best_seq_x)
-        x_std = np.std(dx)
-        dy = np.diff(best_seq_y)
-        y_std = np.std(dy)
+        dx2 = np.diff(best_seq_x)
+        x_std = np.std(dx2)
+        dy2 = np.diff(best_seq_y)
+        y_std = np.std(dy2)
 
         # print(f"Standard deviations: {x_std}, {y_std}")
         # if the step sizes are consistent, enough, then we can use them
@@ -252,14 +245,31 @@ def findChessboardCorners(img_arr_gray: ndarray, noise_threshold=8000):
         for j in range(len(sub_seqs_y)):
             k = k + 1
 
-            # [y, x, y, x]
+            # [left y, upper x, right y, lower x]
+            ly = sub_seqs_y[j][0] - corners[0] - dy
+            ry = sub_seqs_y[j][-1] - corners[0] + dy
+            if ry < ly:
+                __t = ry
+                ry = ly
+                ly = __t
+            ux = sub_seqs_x[i][0] - corners[1] - dx
+            lx = sub_seqs_x[i][-1] - corners[1] + dx
+            if lx < ux:
+                __t = lx
+                lx = ux
+                ux = __t
+            
             sub_corners = np.array([
-                sub_seqs_y[j][0] - corners[0] - dy, sub_seqs_x[i][0] - corners[1] - dx,
-                sub_seqs_y[j][-1] - corners[0] + dy, sub_seqs_x[i][-1] - corners[1] + dx],
-                dtype=np.uint8)
+                ly, ux,
+                ry, lx,],
+                dtype=np.uint64)
 
-            # Generate crop candidate, nearest pixel is fine for correlation check
-            sub_img = gray_img_crop.crop(sub_corners).resize((64, 64))
+            try:
+                # Generate crop candidate, nearest pixel is fine for correlation check
+                sub_img = gray_img_crop.crop(sub_corners).resize((64, 64))
+            except ValueError as err:
+                print(f"Corners: {sub_corners}, y Seq: {sub_seqs_y[j][0]}, dy: {dy}, corner: {corners[0]}")
+                raise err
 
             # Perform correlation score, keep running best corners as our final output
             # Use absolute since it's possible board is rotated 90 deg
@@ -271,7 +281,6 @@ def findChessboardCorners(img_arr_gray: ndarray, noise_threshold=8000):
     return final_corners
 
 
-@jit(nopython=True)
 def getAllSequences(seq, min_seq_len=7, err_px=5) -> list[ndarray]:
     """Given sequence of increasing numbers, get all sequences with common
     spacing (within err_px) that contain at least min_seq_len values"""
@@ -369,8 +378,8 @@ def getChessBoardGray(img, corners):
     img_padded = np.pad(img, ((padl_y, padr_y), (padl_x, padr_x)), mode='edge')
 
     chessboard_img = img_padded[
-                     (padl_y + corners[1]):(padl_y + corners[3]),
-                     (padl_x + corners[0]):(padl_x + corners[2])]
+                     int(padl_y + corners[1]):int(padl_y + corners[3]),
+                     int(padl_x + corners[0]):int(padl_x + corners[2])]
 
     # print(f"Shape: {chessboard_img.shape}")
     # 256x256 px image, 32x32px individual tiles
@@ -431,6 +440,11 @@ def findGrayscaleTilesInImage(img):
     if corners is None or (corners[0], corners[1]) == (corners[2], corners[3]):
         return None, None
 
+    corners = (
+        int(corners[0]), int(corners[1]),
+        int(corners[2]), int(corners[3]),
+    )
+
     # Pull grayscale tiles out given image and chessboard corners
     tiles = getChessTilesGray(img_arr, corners)
 
@@ -438,13 +452,13 @@ def findGrayscaleTilesInImage(img):
     return tiles, corners
 
 
-def main(url):
-    print("Loading url %s..." % url)
-    color_img, url = loadImageFromURL(url)
+def main(_url):
+    print("Loading url %s..." % _url)
+    color_img, _url = loadImageFromURL(_url)
 
     # Fail if can't load image
     if color_img is None:
-        print('Couldn\'t load url: %s' % url)
+        print('Couldn\'t load url: %s' % _url)
         return
 
     if color_img.mode != 'RGB':
@@ -458,8 +472,8 @@ def main(url):
     # is top left and (x1,y1) is bot right
 
     if corners is not None:
-        print("\tFound corners for %s: %s" % (url, corners))
-        link = getVisualizeLink(corners, url)
+        print("\tFound corners for %s: %s" % (_url, corners))
+        link = getVisualizeLink(corners, _url)
         print(link)
 
         # tiles = getChessTilesColor(np.array(color_img), corners)
